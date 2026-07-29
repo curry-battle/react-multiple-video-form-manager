@@ -1,0 +1,76 @@
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+version-template: '$MAJOR.$MINOR.$PATCH'
+
+categories:
+  - title: '💥 Breaking Changes'
+    labels: ['breaking']
+  - title: '🚀 Features'
+    labels: ['feature']
+  - title: '🐛 Bug Fixes'
+    labels: ['fix']
+  - title: '⚡ Performance'
+    labels: ['perf']
+  - title: '♻️ Refactoring'
+    labels: ['refactor']
+  - title: '🧰 Maintenance'
+    labels: ['docs', 'test', 'build', 'ci', 'chore', 'revert']
+
+exclude-labels:
+  - 'skip-changelog'
+
+version-resolver:
+  major:
+    labels: ['breaking']
+  minor:
+    labels: ['feature']
+  patch:
+    labels: ['fix', 'perf', 'refactor', 'docs', 'test', 'build', 'ci', 'chore', 'revert']
+  default: patch
+
+autolabeler:
+  - label: 'breaking'
+    title:
+      - '/^\w+(\(.+\))?!:\s/'
+    body:
+      - '/BREAKING[ -]CHANGE:/'
+  - label: 'feature'
+    title:
+      - '/^feat(\(.+\))?:\s/i'
+  - label: 'fix'
+    title:
+      - '/^fix(\(.+\))?:\s/i'
+  - label: 'perf'
+    title:
+      - '/^perf(\(.+\))?:\s/i'
+  - label: 'refactor'
+    title:
+      - '/^refactor(\(.+\))?:\s/i'
+  - label: 'docs'
+    title:
+      - '/^docs(\(.+\))?:\s/i'
+  - label: 'test'
+    title:
+      - '/^test(\(.+\))?:\s/i'
+  - label: 'build'
+    title:
+      - '/^build(\(.+\))?:\s/i'
+  - label: 'ci'
+    title:
+      - '/^ci(\(.+\))?:\s/i'
+  - label: 'chore'
+    title:
+      - '/^chore(\(.+\))?:\s/i'
+  - label: 'revert'
+    title:
+      - '/^revert(\(.+\))?:\s/i'
+
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  **Full Changelog**: https://github.com/$OWNER/$REPO/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
+
+change-template: '- $TITLE (#$NUMBER) @$AUTHOR'
+change-title-escapes: '\<*_&'

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+
+  extends: [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+  ],
+
+  // config:recommended includes **/examples/** in ignorePaths;
+  // override so Renovate tracks example app dependencies (used by e2e).
+  ignorePaths: ["**/node_modules/**", "**/vendor/**", "**/__fixtures__/**"],
+
+  mode: "full",
+  dependencyDashboard: true,
+  configMigration: true,
+
+  semanticCommits: "enabled",
+  semanticCommitType: "chore",
+  semanticCommitScope: "deps",
+
+  minimumReleaseAge: "7 days",
+  internalChecksFilter: "strict",
+
+  rangeStrategy: "pin",
+
+  prConcurrentLimit: 5,
+  prHourlyLimit: 2,
+
+  automerge: false,
+
+  packageRules: [
+    {
+      description: "Major updates get a longer cooldown",
+      matchUpdateTypes: ["major"],
+      minimumReleaseAge: "14 days",
+    },
+    {
+      description: "Pin @types/node to match runtime Node major (22)",
+      matchPackageNames: ["@types/node"],
+      allowedVersions: "<23",
+    },
+    {
+      description: "GitHub Actions must stay SHA-pinned",
+      matchManagers: ["github-actions"],
+      pinDigests: true,
+    },
+    {
+      description: "peerDependencies use ranges for consumer compatibility",
+      matchDepTypes: ["peerDependencies"],
+      rangeStrategy: "widen",
+    },
+  ],
+
+  vulnerabilityAlerts: {
+    enabled: true,
+    minimumReleaseAge: "0 days",
+    labels: ["security"],
+  },
+  osvVulnerabilityAlerts: true,
+}

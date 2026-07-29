@@ -1,0 +1,16 @@
+packages:
+  - packages/*
+  - examples/*
+
+# 公開から一定時間が経つまで新規バージョンを解決しない（cooldown）。pnpm の単位は「分」。
+# 7 days = 7 × 1440 = 10080 分。
+minimumReleaseAge: 10080
+minimumReleaseAgeExclude: []
+
+blockExoticSubdeps: true
+
+# 依存のライフサイクルスクリプト（postinstall 等）は既定でブロックされる。
+# 実行を許可するパッケージのみ allowlist に明示する。
+allowBuilds: { esbuild: true }
+
+verifyDepsBeforeRun: error

@@ -1,0 +1,27 @@
+{
+	"name": "react-multiple-video-form-manager-workspace",
+	"private": true,
+	"license": "MIT",
+	"type": "module",
+	"packageManager": "pnpm@11.8.0",
+	"scripts": {
+		"build": "pnpm --filter @curry-battle/react-multiple-video-manager run build",
+		"test": "pnpm --filter @curry-battle/react-multiple-video-manager run test",
+		"typecheck": "pnpm --filter @curry-battle/react-multiple-video-manager run typecheck && pnpm --filter example-video-form-rhf run typecheck && pnpm --filter example-video-form-tanstack run typecheck && tsc -p e2e/tsconfig.json --noEmit",
+		"check": "biome check --write",
+		"check:ci": "biome check",
+		"dev:example:rhf": "pnpm --filter example-video-form-rhf run dev",
+		"dev:example:tanstack": "pnpm --filter example-video-form-tanstack run dev",
+		"test:e2e": "playwright test",
+		"test:e2e:rhf": "playwright test --project=rhf",
+		"test:e2e:tanstack": "playwright test --project=tanstack",
+		"test:e2e:ui": "playwright test --ui",
+		"test:e2e:install": "playwright install --with-deps chromium"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.5",
+		"@playwright/test": "1.61.1",
+		"@types/node": "24.13.3",
+		"typescript": "7.0.2"
+	}
+}
