@@ -5,7 +5,7 @@ import {
 	useThumbnailPreviewUrl,
 	type Video,
 	VideoFormStatus,
-} from "@curry-battle/react-multiple-video-manager";
+} from "@curry-battle/react-multiple-video-form-manager";
 import type { ChangeEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 

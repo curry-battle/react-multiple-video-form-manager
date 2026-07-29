@@ -1,5 +1,5 @@
 {
-	"name": "@curry-battle/react-multiple-video-manager",
+	"name": "@curry-battle/react-multiple-video-form-manager",
 	"version": "0.1.0",
 	"description": "Headless React library for managing multiple videos with thumbnail support. Works with React Hook Form and TanStack Form via Ports & Adapters.",
 	"keywords": [
@@ -15,7 +15,7 @@
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/curry-battle/react-multiple-video-form-manager.git",
-		"directory": "packages/react-multiple-video-manager"
+		"directory": "packages/react-multiple-video-form-manager"
 	},
 	"homepage": "https://github.com/curry-battle/react-multiple-video-form-manager#readme",
 	"bugs": "https://github.com/curry-battle/react-multiple-video-form-manager/issues",

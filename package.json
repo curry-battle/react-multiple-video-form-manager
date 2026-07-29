@@ -5,9 +5,9 @@
 	"type": "module",
 	"packageManager": "pnpm@11.8.0",
 	"scripts": {
-		"build": "pnpm --filter @curry-battle/react-multiple-video-manager run build",
-		"test": "pnpm --filter @curry-battle/react-multiple-video-manager run test",
-		"typecheck": "pnpm --filter @curry-battle/react-multiple-video-manager run typecheck && pnpm --filter example-video-form-rhf run typecheck && pnpm --filter example-video-form-tanstack run typecheck && tsc -p e2e/tsconfig.json --noEmit",
+		"build": "pnpm --filter @curry-battle/react-multiple-video-form-manager run build",
+		"test": "pnpm --filter @curry-battle/react-multiple-video-form-manager run test",
+		"typecheck": "pnpm --filter @curry-battle/react-multiple-video-form-manager run typecheck && pnpm --filter example-video-form-rhf run typecheck && pnpm --filter example-video-form-tanstack run typecheck && tsc -p e2e/tsconfig.json --noEmit",
 		"check": "biome check --write",
 		"check:ci": "biome check",
 		"dev:example:rhf": "pnpm --filter example-video-form-rhf run dev",

@@ -1,4 +1,4 @@
-# react-multiple-video-manager
+# react-multiple-video-form-manager
 
 [Japanese / 日本語](./README.ja.md)
 
@@ -25,7 +25,7 @@ Supports **React Hook Form** and **TanStack Form**, with optional **Zod** / **Va
 
 | Package | Description |
 |---------|-------------|
-| [`packages/react-multiple-video-manager`](./packages/react-multiple-video-manager/) | Core library (`@curry-battle/react-multiple-video-manager`) |
+| [`packages/react-multiple-video-form-manager`](./packages/react-multiple-video-form-manager/) | Core library (`@curry-battle/react-multiple-video-form-manager`) |
 | [`examples/video-form-rhf`](./examples/video-form-rhf/) | Example app with React Hook Form |
 | [`examples/video-form-tanstack`](./examples/video-form-tanstack/) | Example app with TanStack Form |
 
@@ -66,7 +66,7 @@ pnpm run check
 
 ## Documentation
 
-See the [library README](./packages/react-multiple-video-manager/README.md) for full API documentation, usage examples, and export map.
+See the [library README](./packages/react-multiple-video-form-manager/README.md) for full API documentation, usage examples, and export map.
 
 ## Architecture
 
@@ -80,7 +80,7 @@ App ─┬─ react-hook-form adapter ─┐
 
 ## Releasing
 
-1. Create a PR that bumps `version` in `packages/react-multiple-video-manager/package.json` and merge it.
+1. Create a PR that bumps `version` in `packages/react-multiple-video-form-manager/package.json` and merge it.
 2. Open the draft Release created by [release-drafter](https://github.com/release-drafter/release-drafter). Set the tag to `v<version>` (must match the version from step 1) and publish.
 3. The **Publish Package** workflow runs automatically: it verifies the tag matches `package.json`, builds, and publishes to GitHub Packages. A version mismatch will fail the workflow.
 

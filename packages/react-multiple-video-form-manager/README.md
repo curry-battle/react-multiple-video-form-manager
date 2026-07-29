@@ -1,4 +1,4 @@
-# @curry-battle/react-multiple-video-manager
+# @curry-battle/react-multiple-video-form-manager
 
 [Japanese / 日本語](./README.ja.md)
 
@@ -10,7 +10,7 @@ Supports both react-hook-form and TanStack Form via Hexagonal Architecture (Port
 ## Installation
 
 ```bash
-npm install @curry-battle/react-multiple-video-manager
+npm install @curry-battle/react-multiple-video-form-manager
 ```
 
 GitHub Packages `.npmrc`:
@@ -46,8 +46,8 @@ npm install valibot
 Videos are managed as an array field, with deleted video IDs tracked in a separate field. By default, the deleted IDs field name is `${name}DeletedIds` (e.g., `videosDeletedIds` for `name="videos"`). Override with the `deletedName` prop if needed.
 
 ```tsx
-import { type Video } from "@curry-battle/react-multiple-video-manager";
-import { MultiVideoController } from "@curry-battle/react-multiple-video-manager/react-hook-form";
+import { type Video } from "@curry-battle/react-multiple-video-form-manager";
+import { MultiVideoController } from "@curry-battle/react-multiple-video-form-manager/react-hook-form";
 import { useForm } from "react-hook-form";
 
 type MyForm = {
@@ -98,7 +98,7 @@ function MyForm() {
 You can also use the hook directly without the Controller component.
 
 ```tsx
-import { useMultiVideoController } from "@curry-battle/react-multiple-video-manager/react-hook-form";
+import { useMultiVideoController } from "@curry-battle/react-multiple-video-form-manager/react-hook-form";
 import { useForm } from "react-hook-form";
 
 const form = useForm<MyForm>();
@@ -115,8 +115,8 @@ const { items, rootErrors, handlers, pendingOperations, isAdding, isBusy, prepar
 `createVideosSchema` returns an array schema, so wrap it in `z.object({ <fieldName>: createVideosSchema(...) })` before passing as a validator (use `v.object` for Valibot).
 
 ```tsx
-import { createVideosSchema } from "@curry-battle/react-multiple-video-manager/schemas/zod";
-import { MultiVideoController } from "@curry-battle/react-multiple-video-manager/tanstack-form";
+import { createVideosSchema } from "@curry-battle/react-multiple-video-form-manager/schemas/zod";
+import { MultiVideoController } from "@curry-battle/react-multiple-video-form-manager/tanstack-form";
 import { useForm } from "@tanstack/react-form";
 import { z } from "zod";
 
@@ -170,7 +170,7 @@ import { MultiVideoController as TanstackController } from ".../tanstack-form";
 Use `VideoUtils.createExisting` to build `VideoExisting` items from server data:
 
 ```tsx
-import { VideoUtils } from "@curry-battle/react-multiple-video-manager";
+import { VideoUtils } from "@curry-battle/react-multiple-video-form-manager";
 
 const initialVideos = serverVideos.map((sv) =>
   VideoUtils.createExisting({
@@ -187,7 +187,7 @@ Newly added videos (`status: "new"`) do not hold a previewUrl in form state.
 Use `usePreviewUrl` inside a per-item component to derive the preview from `file`.
 
 ```tsx
-import { usePreviewUrl, type Video } from "@curry-battle/react-multiple-video-manager";
+import { usePreviewUrl, type Video } from "@curry-battle/react-multiple-video-form-manager";
 
 function VideoItem({ video }: { video: Video }) {
   const previewUrl = usePreviewUrl(video);
@@ -198,7 +198,7 @@ function VideoItem({ video }: { video: Video }) {
 For thumbnail previews, use `useThumbnailPreviewUrl`:
 
 ```tsx
-import { useThumbnailPreviewUrl } from "@curry-battle/react-multiple-video-manager";
+import { useThumbnailPreviewUrl } from "@curry-battle/react-multiple-video-form-manager";
 
 function ThumbnailPreview({ video }: { video: Video }) {
   const thumbnailUrl = useThumbnailPreviewUrl(video.thumbnail ?? null);
@@ -214,7 +214,7 @@ Since these are hooks, they cannot be called inside an `items.map()` callback. E
 `getFileFromChangeEvent` (single) and `getFilesFromChangeEvent` (multiple) extract `File`(s) from an `<input type="file">` change event, throwing when no file is selected. Resetting `input.value` remains the caller's responsibility.
 
 ```tsx
-import { getFileFromChangeEvent } from "@curry-battle/react-multiple-video-manager";
+import { getFileFromChangeEvent } from "@curry-battle/react-multiple-video-form-manager";
 
 <input
   type="file"
@@ -337,7 +337,7 @@ import {
   VideoUtils,
   ThumbnailSubmitStatus,
   type ThumbnailForSubmit,
-} from "@curry-battle/react-multiple-video-manager";
+} from "@curry-battle/react-multiple-video-form-manager";
 
 const videosForSubmit = VideoUtils.computeVideosForSubmit(videos);
 
@@ -379,9 +379,9 @@ When using CloudFront, forward the `Origin` header in the origin request policy 
 ## Schema (Zod / Valibot)
 
 ```ts
-import { createVideosSchema } from "@curry-battle/react-multiple-video-manager/schemas/zod";
+import { createVideosSchema } from "@curry-battle/react-multiple-video-form-manager/schemas/zod";
 // or:
-// import { createVideosSchema } from "@curry-battle/react-multiple-video-manager/schemas/valibot";
+// import { createVideosSchema } from "@curry-battle/react-multiple-video-form-manager/schemas/valibot";
 
 const videosSchema = createVideosSchema({
   acceptedVideoTypes: ["video/mp4"],
@@ -397,7 +397,7 @@ const videosSchema = createVideosSchema({
 For the `deletedVideoIds` field, use `createDeletedVideoIdsSchema`:
 
 ```ts
-import { createDeletedVideoIdsSchema } from "@curry-battle/react-multiple-video-manager/schemas/zod";
+import { createDeletedVideoIdsSchema } from "@curry-battle/react-multiple-video-form-manager/schemas/zod";
 
 const deletedIdsSchema = createDeletedVideoIdsSchema({
   idValidation: (id) => isValidId(id),
@@ -408,11 +408,11 @@ const deletedIdsSchema = createDeletedVideoIdsSchema({
 
 | Path | Contents |
 |------|----------|
-| `@curry-battle/react-multiple-video-manager` | Core (types, VideoUtils, ThumbnailUtils, useMultiVideoCore, usePreviewUrl, useThumbnailPreviewUrl, prepareForSubmit, getFileFromChangeEvent / getFilesFromChangeEvent, VideoFieldAdapter) |
-| `@curry-battle/react-multiple-video-manager/react-hook-form` | RHF adapter (MultiVideoController, useMultiVideoController, useVideoFieldAdapter) |
-| `@curry-battle/react-multiple-video-manager/tanstack-form` | TanStack Form adapter (MultiVideoController, useMultiVideoController, useVideoFieldAdapter) |
-| `@curry-battle/react-multiple-video-manager/schemas/zod` | Zod schema factory |
-| `@curry-battle/react-multiple-video-manager/schemas/valibot` | Valibot schema factory |
+| `@curry-battle/react-multiple-video-form-manager` | Core (types, VideoUtils, ThumbnailUtils, useMultiVideoCore, usePreviewUrl, useThumbnailPreviewUrl, prepareForSubmit, getFileFromChangeEvent / getFilesFromChangeEvent, VideoFieldAdapter) |
+| `@curry-battle/react-multiple-video-form-manager/react-hook-form` | RHF adapter (MultiVideoController, useMultiVideoController, useVideoFieldAdapter) |
+| `@curry-battle/react-multiple-video-form-manager/tanstack-form` | TanStack Form adapter (MultiVideoController, useMultiVideoController, useVideoFieldAdapter) |
+| `@curry-battle/react-multiple-video-form-manager/schemas/zod` | Zod schema factory |
+| `@curry-battle/react-multiple-video-form-manager/schemas/valibot` | Valibot schema factory |
 
 ## Architecture
 

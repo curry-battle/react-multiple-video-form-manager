@@ -1,4 +1,4 @@
-# react-multiple-video-manager
+# react-multiple-video-form-manager
 
 [English](./README.md)
 
@@ -25,7 +25,7 @@ React 向けのヘッドレスな複数動画管理ライブラリ。追加・�
 
 | パッケージ | 説明 |
 |-----------|------|
-| [`packages/react-multiple-video-manager`](./packages/react-multiple-video-manager/) | コアライブラリ (`@curry-battle/react-multiple-video-manager`) |
+| [`packages/react-multiple-video-form-manager`](./packages/react-multiple-video-form-manager/) | コアライブラリ (`@curry-battle/react-multiple-video-form-manager`) |
 | [`examples/video-form-rhf`](./examples/video-form-rhf/) | React Hook Form のサンプルアプリ |
 | [`examples/video-form-tanstack`](./examples/video-form-tanstack/) | TanStack Form のサンプルアプリ |
 
@@ -66,7 +66,7 @@ pnpm run check
 
 ## ドキュメント
 
-API ドキュメント・使用例・エクスポートマップは[ライブラリの README](./packages/react-multiple-video-manager/README.md) を参照してください。
+API ドキュメント・使用例・エクスポートマップは[ライブラリの README](./packages/react-multiple-video-form-manager/README.md) を参照してください。
 
 ## アーキテクチャ
 
@@ -80,7 +80,7 @@ App ─┬─ react-hook-form adapter ─┐
 
 ## リリース手順
 
-1. `packages/react-multiple-video-manager/package.json` の `version` を更新する PR を作成・マージする。
+1. `packages/react-multiple-video-form-manager/package.json` の `version` を更新する PR を作成・マージする。
 2. [release-drafter](https://github.com/release-drafter/release-drafter) が作成したドラフト Release を開き、タグ名を `v<version>`（ステップ 1 の version と一致させる）に設定して publish する。
 3. **Publish Package** ワークフローが自動実行され、タグと `package.json` の version 一致を検証 → ビルド → GitHub Packages へ publish する。version 不一致の場合はワークフローが失敗する。
 

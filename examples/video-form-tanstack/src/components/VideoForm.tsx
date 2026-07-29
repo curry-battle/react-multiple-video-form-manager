@@ -5,8 +5,8 @@ import {
 	type PrepareForSubmitFn,
 	type PrepareForSubmitOptions,
 	type Video,
-} from "@curry-battle/react-multiple-video-manager";
-import { MultiVideoController } from "@curry-battle/react-multiple-video-manager/tanstack-form";
+} from "@curry-battle/react-multiple-video-form-manager";
+import { MultiVideoController } from "@curry-battle/react-multiple-video-form-manager/tanstack-form";
 import { useForm } from "@tanstack/react-form";
 import { type ChangeEvent, useCallback, useRef, useState } from "react";
 import { API } from "../api/api";

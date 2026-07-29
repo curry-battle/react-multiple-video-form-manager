@@ -10,7 +10,7 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@curry-battle/react-multiple-video-manager": "workspace:*",
+		"@curry-battle/react-multiple-video-form-manager": "workspace:*",
 		"@tanstack/react-form": "1.33.2",
 		"react": "19.2.8",
 		"react-dom": "19.2.8",

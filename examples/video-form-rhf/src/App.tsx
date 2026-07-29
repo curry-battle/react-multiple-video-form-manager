@@ -1,7 +1,7 @@
 import {
 	type Video,
 	VideoUtils,
-} from "@curry-battle/react-multiple-video-manager";
+} from "@curry-battle/react-multiple-video-form-manager";
 import { useState } from "react";
 import { VideoForm } from "./components/VideoForm";
 import { generateUUIDv7 } from "./libs/Uuid";

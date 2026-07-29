@@ -4,8 +4,8 @@ import {
 	type PrepareForSubmitError,
 	type UploadOnSelectOptions,
 	type Video,
-} from "@curry-battle/react-multiple-video-manager";
-import { MultiVideoController } from "@curry-battle/react-multiple-video-manager/react-hook-form";
+} from "@curry-battle/react-multiple-video-form-manager";
+import { MultiVideoController } from "@curry-battle/react-multiple-video-form-manager/react-hook-form";
 import { standardSchemaResolver } from "@hookform/resolvers/standard-schema";
 import type { ChangeEvent } from "react";
 import { useCallback, useState } from "react";

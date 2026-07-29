@@ -1,4 +1,4 @@
-# Architecture — `@curry-battle/react-multiple-video-manager`
+# Architecture — `@curry-battle/react-multiple-video-form-manager`
 
 ## 設計方針
 
@@ -144,7 +144,7 @@ Render Props コンポーネント `MultiVideoController`（両 subpath 同名�
 ## ディレクトリ構成
 
 ```
-packages/react-multiple-video-manager/src/
+packages/react-multiple-video-form-manager/src/
 ├─ index.ts                       # ".": 中立 root
 ├─ core/
 │  ├─ useMultiVideoCore.ts        # フォーム非依存コア hook

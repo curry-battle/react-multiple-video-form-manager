@@ -1,4 +1,4 @@
-import { createVideosSchema } from "@curry-battle/react-multiple-video-manager/schemas/zod";
+import { createVideosSchema } from "@curry-battle/react-multiple-video-form-manager/schemas/zod";
 import { z } from "zod";
 import { isUUID } from "../../libs/Uuid";
 

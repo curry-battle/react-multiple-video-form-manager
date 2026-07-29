@@ -32,7 +32,7 @@
 	"overrides": [
 		{
 			"includes": [
-				"./packages/react-multiple-video-manager/src/tanstack-form/useVideoFieldAdapter.ts"
+				"./packages/react-multiple-video-form-manager/src/tanstack-form/useVideoFieldAdapter.ts"
 			],
 			"linter": {
 				"rules": {

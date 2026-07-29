@@ -33,7 +33,7 @@ jobs:
 
       - name: Verify version matches release tag
         run: |
-          PKG_VERSION="v$(node -p "require('./packages/react-multiple-video-manager/package.json').version")"
+          PKG_VERSION="v$(node -p "require('./packages/react-multiple-video-form-manager/package.json').version")"
           TAG="${{ github.event.release.tag_name }}"
           if [ "$PKG_VERSION" != "$TAG" ]; then
             echo "::error::Version mismatch: package.json=$PKG_VERSION, release tag=$TAG"
@@ -44,6 +44,6 @@ jobs:
         run: pnpm run build
 
       - name: Publish
-        run: pnpm --filter @curry-battle/react-multiple-video-manager publish --no-git-checks
+        run: pnpm --filter @curry-battle/react-multiple-video-form-manager publish --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

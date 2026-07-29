@@ -1,4 +1,4 @@
-# @curry-battle/react-multiple-video-manager
+# @curry-battle/react-multiple-video-form-manager
 
 [English](./README.md)
 
@@ -9,7 +9,7 @@ Discriminated Union と State Machine パターンで複数動画の追加・削
 ## インストール
 
 ```bash
-npm install @curry-battle/react-multiple-video-manager
+npm install @curry-battle/react-multiple-video-form-manager
 ```
 
 GitHub Packages の `.npmrc`:
@@ -45,8 +45,8 @@ npm install valibot
 動画は配列フィールドで管理し、削除された動画のIDは別フィールドで追跡します。デフォルトでは `${name}DeletedIds`（例: `name="videos"` なら `videosDeletedIds`）が使われます。異なる場合は `deletedName` で指定してください。
 
 ```tsx
-import { type Video } from "@curry-battle/react-multiple-video-manager";
-import { MultiVideoController } from "@curry-battle/react-multiple-video-manager/react-hook-form";
+import { type Video } from "@curry-battle/react-multiple-video-form-manager";
+import { MultiVideoController } from "@curry-battle/react-multiple-video-form-manager/react-hook-form";
 import { useForm } from "react-hook-form";
 
 type MyForm = {
@@ -97,7 +97,7 @@ function MyForm() {
 Controller コンポーネントを使わず hook を直接利用することもできます。
 
 ```tsx
-import { useMultiVideoController } from "@curry-battle/react-multiple-video-manager/react-hook-form";
+import { useMultiVideoController } from "@curry-battle/react-multiple-video-form-manager/react-hook-form";
 import { useForm } from "react-hook-form";
 
 const form = useForm<MyForm>();
@@ -114,8 +114,8 @@ const { items, rootErrors, handlers, pendingOperations, isAdding, isBusy, prepar
 `createVideosSchema` は配列スキーマを返すので、validator として渡す前に `z.object({ <fieldName>: createVideosSchema(...) })` で wrap してください（valibot の場合は `v.object`）。
 
 ```tsx
-import { createVideosSchema } from "@curry-battle/react-multiple-video-manager/schemas/zod";
-import { MultiVideoController } from "@curry-battle/react-multiple-video-manager/tanstack-form";
+import { createVideosSchema } from "@curry-battle/react-multiple-video-form-manager/schemas/zod";
+import { MultiVideoController } from "@curry-battle/react-multiple-video-form-manager/tanstack-form";
 import { useForm } from "@tanstack/react-form";
 import { z } from "zod";
 
@@ -169,7 +169,7 @@ import { MultiVideoController as TanstackController } from ".../tanstack-form";
 サーバーデータから `VideoExisting` を組み立てるには `VideoUtils.createExisting` を使います:
 
 ```tsx
-import { VideoUtils } from "@curry-battle/react-multiple-video-manager";
+import { VideoUtils } from "@curry-battle/react-multiple-video-form-manager";
 
 const initialVideos = serverVideos.map((sv) =>
   VideoUtils.createExisting({
@@ -186,7 +186,7 @@ const initialVideos = serverVideos.map((sv) =>
 `usePreviewUrl` を各アイテムコンポーネント内で使い、`file` からプレビューを導出してください。
 
 ```tsx
-import { usePreviewUrl, type Video } from "@curry-battle/react-multiple-video-manager";
+import { usePreviewUrl, type Video } from "@curry-battle/react-multiple-video-form-manager";
 
 function VideoItem({ video }: { video: Video }) {
   const previewUrl = usePreviewUrl(video);
@@ -197,7 +197,7 @@ function VideoItem({ video }: { video: Video }) {
 サムネイルのプレビューには `useThumbnailPreviewUrl` を使います:
 
 ```tsx
-import { useThumbnailPreviewUrl } from "@curry-battle/react-multiple-video-manager";
+import { useThumbnailPreviewUrl } from "@curry-battle/react-multiple-video-form-manager";
 
 function ThumbnailPreview({ video }: { video: Video }) {
   const thumbnailUrl = useThumbnailPreviewUrl(video.thumbnail ?? null);
@@ -213,7 +213,7 @@ function ThumbnailPreview({ video }: { video: Video }) {
 `getFileFromChangeEvent`（単一）/ `getFilesFromChangeEvent`（複数）は `<input type="file">` の change イベントから `File` を取り出します。ファイル未選択時は throw します。`input.value` のリセットは呼び出し側の責務です。
 
 ```tsx
-import { getFileFromChangeEvent } from "@curry-battle/react-multiple-video-manager";
+import { getFileFromChangeEvent } from "@curry-battle/react-multiple-video-form-manager";
 
 <input
   type="file"
@@ -336,7 +336,7 @@ import {
   VideoUtils,
   ThumbnailSubmitStatus,
   type ThumbnailForSubmit,
-} from "@curry-battle/react-multiple-video-manager";
+} from "@curry-battle/react-multiple-video-form-manager";
 
 const videosForSubmit = VideoUtils.computeVideosForSubmit(videos);
 
@@ -378,9 +378,9 @@ CloudFront を併用する場合は、オリジンリクエストポリシーで
 ## スキーマ (Zod / Valibot)
 
 ```ts
-import { createVideosSchema } from "@curry-battle/react-multiple-video-manager/schemas/zod";
+import { createVideosSchema } from "@curry-battle/react-multiple-video-form-manager/schemas/zod";
 // または:
-// import { createVideosSchema } from "@curry-battle/react-multiple-video-manager/schemas/valibot";
+// import { createVideosSchema } from "@curry-battle/react-multiple-video-form-manager/schemas/valibot";
 
 const videosSchema = createVideosSchema({
   acceptedVideoTypes: ["video/mp4"],
@@ -396,7 +396,7 @@ const videosSchema = createVideosSchema({
 `deletedVideoIds` フィールドには `createDeletedVideoIdsSchema` を使います:
 
 ```ts
-import { createDeletedVideoIdsSchema } from "@curry-battle/react-multiple-video-manager/schemas/zod";
+import { createDeletedVideoIdsSchema } from "@curry-battle/react-multiple-video-form-manager/schemas/zod";
 
 const deletedIdsSchema = createDeletedVideoIdsSchema({
   idValidation: (id) => isValidId(id),
@@ -407,11 +407,11 @@ const deletedIdsSchema = createDeletedVideoIdsSchema({
 
 | パス | 内容 |
 |------|------|
-| `@curry-battle/react-multiple-video-manager` | コア（型、VideoUtils、ThumbnailUtils、useMultiVideoCore、usePreviewUrl、useThumbnailPreviewUrl、prepareForSubmit、getFileFromChangeEvent / getFilesFromChangeEvent、VideoFieldAdapter） |
-| `@curry-battle/react-multiple-video-manager/react-hook-form` | RHF アダプタ（MultiVideoController、useMultiVideoController、useVideoFieldAdapter） |
-| `@curry-battle/react-multiple-video-manager/tanstack-form` | TanStack Form アダプタ（MultiVideoController、useMultiVideoController、useVideoFieldAdapter） |
-| `@curry-battle/react-multiple-video-manager/schemas/zod` | Zod スキーマファクトリ |
-| `@curry-battle/react-multiple-video-manager/schemas/valibot` | Valibot スキーマファクトリ |
+| `@curry-battle/react-multiple-video-form-manager` | コア（型、VideoUtils、ThumbnailUtils、useMultiVideoCore、usePreviewUrl、useThumbnailPreviewUrl、prepareForSubmit、getFileFromChangeEvent / getFilesFromChangeEvent、VideoFieldAdapter） |
+| `@curry-battle/react-multiple-video-form-manager/react-hook-form` | RHF アダプタ（MultiVideoController、useMultiVideoController、useVideoFieldAdapter） |
+| `@curry-battle/react-multiple-video-form-manager/tanstack-form` | TanStack Form アダプタ（MultiVideoController、useMultiVideoController、useVideoFieldAdapter） |
+| `@curry-battle/react-multiple-video-form-manager/schemas/zod` | Zod スキーマファクトリ |
+| `@curry-battle/react-multiple-video-form-manager/schemas/valibot` | Valibot スキーマファクトリ |
 
 ## アーキテクチャ
 
