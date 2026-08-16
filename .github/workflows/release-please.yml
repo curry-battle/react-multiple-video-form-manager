@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# 並走すると 2 つの run がリリース PR のブランチを同時に更新し、
+# リリースの作成も二重に走る。
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      # リリース PR に autorelease ラベルを付けるために必要
+      issues: write
+      pull-requests: write
+    outputs:
+      released: ${{ steps.release.outputs['packages/react-multiple-video-form-manager--release_created'] }}
+      tag: ${{ steps.release.outputs['packages/react-multiple-video-form-manager--tag_name'] }}
+    steps:
+      # publish が終わっていないリリースがあるあいだは、次のリリース処理を進めない。
+      # 未公開の Draft Release がその印になる。
+      #
+      # Draft が残っている間に release-please job が再実行されると、
+      # 公開されていないバージョンを飛び越したままリリースが進む危険性がある。
+      #
+      # publish が失敗した run は、この job を再実行せずに publish から再開する。
+      # 「Re-run failed jobs」でも publish job 単体の再実行でもよい。この job が
+      # 再実行されなければ前回の出力が再利用され、publish が正しい tag で走る。
+      # 再実行を可能にする output は release-please 側に無い（release-please-action#1163）。
+      #
+      # 例外は publish が受理された直後に応答を失った場合（timeout / 切断）。
+      # 再実行しても同一バージョンの公開になるので publish は通らない。
+      # このときは Draft Release を手動で公開してガードを解除する。
+      - name: Fail if an unpublished draft release remains
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          drafts=$(gh release list --json tagName,isDraft --jq '[.[] | select(.isDraft) | .tagName] | join(", ")')
+          if [ -n "$drafts" ]; then
+            echo "::error::未公開の Draft Release が残っています: ${drafts}"
+            exit 1
+          fi
+
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+
+  publish:
+    needs: release-please
+    if: needs.release-please.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          registry-url: https://npm.pkg.github.com
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # typecheck / lint / test はここでは走らせない。
+      # リリース PR が加える差分は package.json のバージョン、CHANGELOG.md、
+      # .release-please-manifest.json だけであるため。
+      # なおリリース PR は bot が作るため、その CI は手動で承認しないと走らない。
+      # 承認されている前提には立たない。
+      - name: Build
+        run: pnpm run build
+
+      - name: Publish
+        run: pnpm --filter @curry-battle/react-multiple-video-form-manager publish --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  undraft:
+    # publish が成功してから公開する。GitHub のタグは Release を公開した時点で
+    # ロックされるので、この順序なら publish 失敗時にタグを作り直せる。
+    needs: [release-please, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release-please.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false

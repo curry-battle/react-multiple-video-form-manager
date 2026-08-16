@@ -80,11 +80,13 @@ App ─┬─ react-hook-form adapter ─┐
 
 ## リリース手順
 
-1. `packages/react-multiple-video-form-manager/package.json` の `version` を更新する PR を作成・マージする。
-2. [release-drafter](https://github.com/release-drafter/release-drafter) が作成したドラフト Release を開き、タグ名を `v<version>`（ステップ 1 の version と一致させる）に設定して publish する。
-3. **Publish Package** ワークフローが自動実行され、タグと `package.json` の version 一致を検証 → ビルド → GitHub Packages へ publish する。version 不一致の場合はワークフローが失敗する。
+リリースは [release-please](https://github.com/googleapis/release-please) が自動化しています。手動でのバージョン更新とタグ付けは不要です。
 
-PR ラベル（`feature`、`fix`、`breaking` 等）が release-drafter のチェンジログカテゴリを制御する。ラベルは conventional commit プレフィクスから autolabeler で自動付与されるが、手動ラベル付けも可能。
+1. conventional commit 形式のタイトルを付けた PR を squash マージする。
+2. release-please が、バージョンの bump と `CHANGELOG.md` の更新を含むリリース PR を作成・更新する。
+3. リリース PR をマージすると、タグと Draft Release が作られ、GitHub Packages への publish が成功した時点で Release が公開される。
+
+バージョンはコミットの型から決まる。`v0.x` のあいだは `feat:` も breaking change も minor、`fix:` は patch。
 
 ## ライセンス
 

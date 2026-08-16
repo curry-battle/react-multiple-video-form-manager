@@ -1,0 +1,14 @@
+{
+	"$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+	"packages": {
+		"packages/react-multiple-video-form-manager": {
+			"release-type": "node",
+			"//include-component-in-tag": "既定の true では react-multiple-video-form-manager-v0.2.0 形式になる。既存タグが v0.1.0 形式なので false が要る",
+			"include-component-in-tag": false,
+			"bump-minor-pre-major": true,
+			"draft": true,
+			"//force-tag-creation": "GitHub は Draft Release に tag ref を作らない。release-please は前回リリースをタグ経由で探すため、無いと毎回「前回リリースなし」と判定して全履歴を含む CHANGELOG を作る",
+			"force-tag-creation": true
+		}
+	}
+}
