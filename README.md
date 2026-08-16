@@ -80,11 +80,13 @@ App ─┬─ react-hook-form adapter ─┐
 
 ## Releasing
 
-1. Create a PR that bumps `version` in `packages/react-multiple-video-form-manager/package.json` and merge it.
-2. Open the draft Release created by [release-drafter](https://github.com/release-drafter/release-drafter). Set the tag to `v<version>` (must match the version from step 1) and publish.
-3. The **Publish Package** workflow runs automatically: it verifies the tag matches `package.json`, builds, and publishes to GitHub Packages. A version mismatch will fail the workflow.
+Releases are automated by [release-please](https://github.com/googleapis/release-please). Manual version bumps and tagging are not needed.
 
-PR labels (`feature`, `fix`, `breaking`, etc.) drive release-drafter's changelog categories. Labels are auto-applied from conventional commit prefixes via autolabeler; manual labeling is also supported.
+1. Squash-merge a PR whose title follows conventional commits.
+2. release-please opens (or updates) a release PR that bumps the version and updates `CHANGELOG.md`.
+3. Merging the release PR creates the tag and a draft Release, and the Release is published once the GitHub Packages publish succeeds.
+
+The version is derived from commit types. While on `v0.x`, both `feat:` and breaking changes bump the minor; `fix:` bumps the patch.
 
 ## License
 
