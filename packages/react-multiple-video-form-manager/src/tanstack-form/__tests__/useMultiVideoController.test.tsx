@@ -10,6 +10,7 @@ import type { CoreMessages } from "../../core/types/VideoSchemaTypes";
 import { VideoFormStatus } from "../../core/types/VideoStatus";
 import { createVideosSchema } from "../../schemas/zod";
 import { MultiVideoController } from "../MultiVideoController";
+import { useMultiVideoController } from "../useMultiVideoController";
 
 const makeNewVideo = (overrides?: Partial<VideoNew>): VideoNew => ({
 	tempId: `temp_new-${crypto.randomUUID().slice(0, 8)}`,
@@ -250,6 +251,66 @@ describe("MultiVideoController (integration)", () => {
 				message: "最大1本まで（custom）",
 			}),
 		);
+	});
+
+	describe("フォームレベル呼び出し", () => {
+		it("<form.Field> の外で呼んでも追加・検証・dirty 追跡が成立する", async () => {
+			const formRef: { current: any } = { current: null };
+			const handleRef: {
+				current: {
+					items: Array<{ video: Video; errors: unknown }>;
+					addVideo: (file: File) => Promise<boolean>;
+				} | null;
+			} = { current: null };
+
+			function FormLevelHost() {
+				const form = useForm({
+					defaultValues: {
+						videos: [],
+						videosDeletedIds: [],
+					} as TestForm,
+					validators: {
+						onChange: z.object({
+							videos: createVideosSchema({
+								acceptedVideoTypes: ["video/mp4"],
+							}),
+							videosDeletedIds: z.array(z.string()),
+						}),
+					},
+				});
+				formRef.current = form;
+
+				const result = useMultiVideoController({
+					form,
+					name: "videos",
+					deletedName: "videosDeletedIds",
+				});
+				handleRef.current = {
+					items: result.items,
+					addVideo: result.handlers.add,
+				};
+
+				return <div data-testid="harness">items:{result.items.length}</div>;
+			}
+
+			await render(<FormLevelHost />);
+
+			await act(async () => {
+				await handleRef.current?.addVideo(
+					new File(["v"], "bad.webm", { type: "video/webm" }),
+				);
+			});
+
+			expect(handleRef.current?.items).toHaveLength(1);
+			expect(
+				(handleRef.current?.items[0]?.errors as Record<string, unknown>)?.file,
+			).toBeDefined();
+
+			const values = formRef.current?.state.values as TestForm | undefined;
+			expect(values?.videos).toHaveLength(1);
+			// field インスタンス未登録でも setFieldValue が fieldMeta を生成する
+			expect(formRef.current?.state.isDirty).toBe(true);
+		});
 	});
 
 	describe("deletedName デフォルト (DX-6)", () => {

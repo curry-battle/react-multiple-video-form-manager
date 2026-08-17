@@ -156,7 +156,7 @@ function MyForm() {
 }
 ```
 
-The TanStack adapter's `MultiVideoController` internally renders `<form.Field mode="array">` and consumes the `field` within a React component to satisfy rules-of-hooks. It uses `useStore(form.store, ...)` / `useStore(field.store, ...)` for reactive subscriptions, keeping `items` / `rootErrors` synchronized after validation.
+The TanStack adapter reads and writes through the form store only (`useStore(form.store, ...)` for reactive subscriptions, keeping `items` / `rootErrors` synchronized after validation), so `useMultiVideoController` can be called at form level. `<form.Field mode="array">` is not required: `validateField` falls back to form-level validators when no field instance is registered, and `setFieldValue` populates `fieldMeta` itself. Call the hook directly when the submit handler needs `prepareForSubmit` — the render-props component keeps it inside the render callback. `name` and `deletedName` must be top-level keys of the form data.
 
 Both subpaths export the same component name `MultiVideoController`. When using both in the same file, use import aliases:
 

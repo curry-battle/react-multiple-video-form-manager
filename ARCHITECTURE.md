@@ -112,14 +112,20 @@ Controller の `render` prop に渡される型。hook の戻り値からリス�
 - errors は `useFormState` から自己取得し `normalizeRhfErrors` で中立化。
 
 ### TanStack Form (`useVideoFieldAdapter`)
-- 必ず `<form.Field name mode="array">` の **内部 React コンポーネント** 内で呼ぶ（rules-of-hooks）。
+- `{ form, name, deletedName, validateCause? }` を受け取る。read / write はすべてフォームストア経由なので
+  `<form.Field mode="array">` の内側である必要がない（フォームレベルで呼べる）。
 - Reactive subscription:
-  - `useStore(field.store, s => s.value)` → `videos`
-  - `useStore(field.store, s => s.meta.errors)` → root meta errors
+  - `useStore(form.store, s => s.values[name])` → `videos`
+  - `useStore(form.store, s => s.fieldMeta[name].errors)` → root meta errors
   - `useStore(form.store, s => s.errorMap)` → item path errors
 - `setVideos` は `form.setFieldValue(name, next)` に委譲。
-- `getVideos` / `getDeletedVideoIds` は `form.getFieldValue()` で同期取得。
+  field インスタンスが未登録でも `setFieldValue` が `fieldMeta[name]` を生成するので
+  touched / dirty / フィールド単位のエラーは追える。
+- `getVideos` / `getDeletedVideoIds` は `form.store.state.values` から同期取得。
+  ネストパス解決ではなく素のキーアクセスなので、`name` / `deletedName` はトップレベルキーであること
+  （ネストパスは実行時に throw する）。
 - `validate()` は `form.validateField(name, validateCause ?? "change")`。
+  field インスタンスが未登録なら TanStack 側がフォームレベルの検証へフォールバックする。
 - `normalizeTanstackErrors` が `videos[i].<key>` / `videos.i.<key>` の path key を解析。
   nested (`videos[0].thumbnail.file`) は最初のセグメントのみ拾い、残りパスは `source` に保持する。
 
@@ -131,6 +137,7 @@ Controller の `render` prop に渡される型。hook の戻り値からリス�
 Render Props コンポーネント `MultiVideoController`（両 subpath 同名）は
 対応する hook を内部で呼び、`render` prop に `MultiVideoRenderProps` を渡す。
 `deletedName` はデフォルト `${name}DeletedIds` で省略可能。
+submit ハンドラから `prepareForSubmit` を触る場合は、render の内側に閉じ込めない hook 側を使う。
 
 ## バンドル隔離
 

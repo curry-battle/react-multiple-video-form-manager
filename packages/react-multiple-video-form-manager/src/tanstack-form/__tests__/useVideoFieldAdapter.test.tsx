@@ -188,62 +188,74 @@ describe("useTanstackVideoFieldAdapter 基本操作", () => {
 	});
 });
 
-describe("deletedName のネストパス制約", () => {
-	it("deletedName にドット区切りのネストパスを渡すと throw する", async () => {
-		const errorSpy = vi.fn();
-		// React ErrorBoundary でキャッチされるため、console.error を抑制
-		const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
-		class ErrorBoundary extends React.Component<
-			{ children: ReactNode; onError: (e: Error) => void },
-			{ error: Error | null }
-		> {
-			state = { error: null as Error | null };
-			static getDerivedStateFromError(error: Error) {
-				return { error };
-			}
-			componentDidCatch(error: Error) {
-				this.props.onError(error);
-			}
-			render() {
-				if (this.state.error) return null;
-				return this.props.children;
-			}
+describe("ネストパス制約", () => {
+	class ErrorBoundary extends React.Component<
+		{ children: ReactNode; onError: (e: Error) => void },
+		{ error: Error | null }
+	> {
+		state = { error: null as Error | null };
+		static getDerivedStateFromError(error: Error) {
+			return { error };
 		}
+		componentDidCatch(error: Error) {
+			this.props.onError(error);
+		}
+		render() {
+			if (this.state.error) return null;
+			return this.props.children;
+		}
+	}
 
-		function NestedHost() {
-			const form = useForm({
-				defaultValues: {
-					videos: [] as Video[],
-					media: { deletedIds: [] as string[] },
-				},
-			});
-			return (
-				<MultiVideoController
-					form={form as any}
-					name="videos"
-					deletedName={"media.deletedIds" as "videosDeletedIds"}
-					render={() => <div>ok</div>}
-				/>
+	function NestedHost(props: { name: string; deletedName: string }) {
+		const form = useForm({
+			defaultValues: {
+				videos: [] as Video[],
+				videosDeletedIds: [] as string[],
+				media: { deletedIds: [] as string[] },
+			},
+		});
+		return (
+			<MultiVideoController
+				form={form as any}
+				name={props.name as "videos"}
+				deletedName={props.deletedName as "videosDeletedIds"}
+				render={() => <div>ok</div>}
+			/>
+		);
+	}
+
+	it.each([
+		["deletedName", "videos", "media.deletedIds"],
+		["deletedName", "videos", "media[0]"],
+		["name", "media.videos", "videosDeletedIds"],
+		["name", "videos[0]", "videosDeletedIds"],
+	])(
+		"%s に %s / %s のネストパスを渡すと throw する",
+		async (label, name, deletedName) => {
+			const errorSpy = vi.fn();
+			// React ErrorBoundary でキャッチされるため、console.error を抑制
+			const consoleSpy = vi
+				.spyOn(console, "error")
+				.mockImplementation(() => {});
+
+			await render(
+				<ErrorBoundary onError={errorSpy}>
+					<NestedHost name={name} deletedName={deletedName} />
+				</ErrorBoundary>,
 			);
-		}
 
-		await render(
-			<ErrorBoundary onError={errorSpy}>
-				<NestedHost />
-			</ErrorBoundary>,
-		);
+			const offending = label === "name" ? name : deletedName;
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					message: expect.stringContaining(
+						`${label} must be a top-level key (got "${offending}")`,
+					),
+				}),
+			);
 
-		expect(errorSpy).toHaveBeenCalledWith(
-			expect.objectContaining({
-				message: expect.stringContaining(
-					'deletedName must be a top-level key (got "media.deletedIds")',
-				),
-			}),
-		);
-
-		consoleSpy.mockRestore();
-	});
+			consoleSpy.mockRestore();
+		},
+	);
 });
 
 describe("validateCause", () => {
