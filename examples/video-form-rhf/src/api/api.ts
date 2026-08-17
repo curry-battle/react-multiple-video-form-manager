@@ -1,4 +1,7 @@
-import type { UploadedSubmitVideo } from "@curry-battle/react-multiple-video-form-manager";
+import type {
+	UploadedSubmitVideo,
+	UploadFileContext,
+} from "@curry-battle/react-multiple-video-form-manager";
 import { generateUUIDv7, type UUID } from "../libs/Uuid";
 
 /** 中断要求で止まる待機。転送ハンドラが ctx.signal を尊重する形を実演する */
@@ -36,9 +39,14 @@ export const API = {
 		videoId: UUID,
 		file: File,
 		uploadUrl: string,
-		signal?: AbortSignal,
+		ctx: UploadFileContext,
 	): Promise<string> => {
-		await delay(1000, signal);
+		// 進捗を刻んで報告する。実際の転送では XHR の progress イベント等をそのまま渡す
+		const steps = 5;
+		for (let step = 1; step <= steps; step++) {
+			await delay(1000 / steps, ctx.signal);
+			ctx.onProgress(step / steps);
+		}
 		console.log(`Uploading file: ${file.name}`);
 
 		try {
