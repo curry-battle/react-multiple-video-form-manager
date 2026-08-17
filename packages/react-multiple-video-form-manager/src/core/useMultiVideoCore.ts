@@ -314,6 +314,13 @@ export function useMultiVideoCore(
 	 *
 	 * 転送スロットごとに分けるのが要点。1 つのカウンタを本体とサムネイルで共有すると、
 	 * 本体の加工中にサムネイルを設定しただけで本体の差し替えが黙って捨てられる。
+	 *
+	 * **スロットの内容を変える handler はすべて世代を進める。** 台帳から落とすだけでは
+	 * 加工待ちの操作は止まらず、落としたはずの内容が加工の完了後に書き戻される。
+	 *
+	 * handlers を介さない書き換え（`form.reset` や adapter への直接書き込み）は観測できない。
+	 * 同じ tempId がそのまま残る復元では、復元前に発行した操作が最新のまま書き戻しうる。
+	 * 項目が一度消えて復活する経路は `pruneOrphans` が世代ごと落とすので閉じている
 	 */
 	const generationsRef = useRef(new Map<string, number>());
 
@@ -748,8 +755,9 @@ export function useMultiVideoCore(
 				ad.setVideos(result.videos);
 				if (result.deletedId !== null) {
 					appendDeletedId(result.deletedId);
-					// 既存動画の差し替えでサムネイルは捨てられる。台帳を残すと、
-					// 対象を失った転送の破棄が孤児回収まわりの経路に回る
+					// 既存動画の差し替えでサムネイルは捨てられる。サムネイルスロットへの
+					// 後続操作でもあるので、台帳から落とすだけでなく世代も進める
+					bumpGeneration(tempId, UploadKind.Thumbnail);
 					discardSlot(tempId, UploadKind.Thumbnail);
 				}
 				startUploadFor(result.video, UploadKind.Video);
@@ -785,13 +793,18 @@ export function useMultiVideoCore(
 				appendDeletedId(result.deletedId);
 			}
 			// 項目が消える唯一の経路。台帳を残すと、削除した項目の失敗が
-			// uploads.failed に残り続け、消費側は items で引けず retry でも消せない
-			for (const kind of UPLOAD_KINDS) discardSlot(tempId, kind);
+			// uploads.failed に残り続け、消費側は items で引けず retry でも消せない。
+			// 世代も進める。同じ tempId が復元されたときに、削除前の加工結果が
+			// 別の項目へ書き戻されるのを防ぐ
+			for (const kind of UPLOAD_KINDS) {
+				bumpGeneration(tempId, kind);
+				discardSlot(tempId, kind);
+			}
 
 			await safeValidate();
 			return true;
 		},
-		[appendDeletedId, discardSlot, safeValidate],
+		[appendDeletedId, bumpGeneration, discardSlot, safeValidate],
 	);
 
 	const handleMoveUp = useCallback(
@@ -939,6 +952,7 @@ export function useMultiVideoCore(
 
 	const handleRemoveThumbnail = useCallback(
 		async (tempId: string): Promise<boolean> => {
+			if (findIndexByTempId(tempId) === undefined) return false;
 			// 加工中の設定操作より後の操作なので、世代を進めてそちらを捨てる。
 			// 進めないと、削除したサムネイルが加工の完了後に戻ってくる
 			bumpGeneration(tempId, UploadKind.Thumbnail);
@@ -947,7 +961,13 @@ export function useMultiVideoCore(
 			await safeValidate();
 			return true;
 		},
-		[bumpGeneration, discardSlot, safeValidate, updateThumbnail],
+		[
+			bumpGeneration,
+			discardSlot,
+			findIndexByTempId,
+			safeValidate,
+			updateThumbnail,
+		],
 	);
 
 	const handlers = useMemo<UseMultiVideoCoreHandlers>(
@@ -1209,7 +1229,13 @@ export function useMultiVideoCore(
 			orphanKeys.push(key);
 		}
 		for (const tempId of seen) {
-			if (!alive.has(tempId)) seen.delete(tempId);
+			if (alive.has(tempId)) continue;
+			seen.delete(tempId);
+			// 世代も落とす。同じ tempId が復活しても、消える前に発行した操作が
+			// 最新のまま残らない（`get` が undefined を返すので stale と判定される）
+			for (const kind of UPLOAD_KINDS) {
+				generationsRef.current.delete(slotKey(tempId, kind));
+			}
 		}
 
 		if (orphanKeys.length === 0) return;

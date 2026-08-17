@@ -683,6 +683,60 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			expect(firstVideo(result).thumbnail).toBeNull();
 		});
 
+		it("[stale] 既存動画の差し替えで捨てたサムネイルが、加工の完了後に戻らない", async () => {
+			const dThumb = createDeferred<File>();
+			const processThumbnailFile = vi.fn(async (_f: File) => dThumb.promise);
+			const { uploadFile, callsOf } = createUploadSpy();
+
+			const ex = makeExistingVideo({ tempId: "temp_ex" });
+			const { result } = await renderCore([ex], {
+				processThumbnailFile,
+				uploadFile,
+			});
+
+			const thumb = thumbFile();
+
+			await act(async () => {
+				const setting = result.current.handlers.setThumbnailFromFile(
+					"temp_ex",
+					thumb,
+				);
+				// 差し替えはサムネイルを捨てる。捨てた側が後の操作なので、加工待ちの
+				// 設定操作は無効になる
+				await result.current.handlers.changeFile("temp_ex", videoFile("n.mp4"));
+				dThumb.resolve(thumb);
+				await setting;
+			});
+
+			expect(firstVideo(result).thumbnail).toBeNull();
+			expect(callsOf("thumbnail")).toHaveLength(0);
+		});
+
+		it("[stale] 削除した tempId が復元されても、削除前の加工結果は書き戻されない", async () => {
+			const dFile = createDeferred<File>();
+			const processFile = vi.fn(async (_f: File) => dFile.promise);
+
+			const nv = makeNewVideo({ tempId: "temp_reused" });
+			const { result, ref } = await renderCore([nv], { processFile });
+
+			const changed = videoFile("changed.mp4");
+			const restored = makeNewVideo({ tempId: "temp_reused" });
+
+			await act(async () => {
+				const changing = result.current.handlers.changeFile(
+					"temp_reused",
+					changed,
+				);
+				await result.current.handlers.delete("temp_reused");
+				// handlers を介さず、同じ tempId で別の項目を復元する（reset 相当）
+				ref.adapter?.setVideos([restored]);
+				dFile.resolve(changed);
+				await changing;
+			});
+
+			expect(firstVideo(result).file).toBe(restored.file);
+		});
+
 		it("[stale] 同一 tempId への連続 setThumbnailFromFile は後発が勝つ", async () => {
 			const dSlow = createDeferred<File>();
 			const dFast = createDeferred<File>();
