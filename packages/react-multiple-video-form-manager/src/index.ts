@@ -45,6 +45,7 @@ export type {
 	Video,
 	VideoExisting,
 	VideoNew,
+	VideoUploaded,
 } from "./core/types/Video";
 export { generateTempId, VideoUtils } from "./core/types/Video";
 export type {

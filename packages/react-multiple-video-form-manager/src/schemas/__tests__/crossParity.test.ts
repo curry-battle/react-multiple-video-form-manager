@@ -153,6 +153,11 @@ describe("cross-parity: Zod and Valibot schemas produce identical results", () =
 				[{ ...validNewVideo, uploadRef: 42 }],
 				"uploadRef",
 			],
+			[
+				"new video with non-string replacesId",
+				[{ ...validNewVideo, replacesId: 42 }],
+				"replacesId",
+			],
 		];
 
 		it.each(pathCases)("%s → both point at %s", (_label, data, key) => {

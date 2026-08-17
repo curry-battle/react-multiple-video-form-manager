@@ -76,6 +76,10 @@ function toSubmitVideo(video: Video): SubmitVideo {
  *
  * `excluded` に入れた tempId は素材から外す。転送の完了を待たない
  * `uploads.getReady` が、まだ送れない項目を落とすために使う。
+ *
+ * 除外した項目が既存動画の差し替えだった場合は、元動画を除外された位置へ戻し、
+ * 削除も取り消す。差し替え後だけを抜くと元動画の削除だけが送信され、元が消えて
+ * 差し替え後も入らない状態になる。
  */
 export function buildSubmitPayload(
 	videos: readonly Video[],
@@ -83,9 +87,30 @@ export function buildSubmitPayload(
 	excluded?: ReadonlySet<string>,
 ): { videos: SubmitVideo[]; deletedIds: string[] } {
 	const submitVideos: SubmitVideo[] = [];
+	const restoredIds = new Set<string>();
+
 	for (const video of videos) {
-		if (excluded?.has(video.tempId)) continue;
+		if (excluded?.has(video.tempId)) {
+			const replacesId =
+				video.status === VideoFormStatus.New ? video.replacesId : undefined;
+			// 同じ元動画を指す新規項目が複数あっても復元は 1 回。素材に同じ id を
+			// 2 度載せると、消費側から見て存在しない重複になる
+			if (replacesId === undefined || restoredIds.has(replacesId)) continue;
+			restoredIds.add(replacesId);
+			submitVideos.push({
+				status: VideoFormStatus.Existing,
+				id: replacesId,
+				// 元動画のサムネイルはこの時点で配列に残っていない。null は
+				// 「変更なし」を意味するので、触らないことがそのまま伝わる
+				thumbnail: null,
+			});
+			continue;
+		}
 		submitVideos.push(toSubmitVideo(video));
 	}
-	return { videos: submitVideos, deletedIds: [...deletedVideoIds] };
+
+	return {
+		videos: submitVideos,
+		deletedIds: deletedVideoIds.filter((id) => !restoredIds.has(id)),
+	};
 }

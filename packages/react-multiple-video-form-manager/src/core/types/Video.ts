@@ -16,6 +16,16 @@ export type VideoNew = VideoBase & {
 	uploadRef?: string;
 	// サムネイル（フレームキャプチャ or アップロード、未設定は null）
 	thumbnail: Thumbnail | null;
+	/**
+	 * この項目が差し替えた既存動画の id（差し替えで生まれた項目のみ）。
+	 *
+	 * 既存動画の差し替えは「元動画の id を deletedVideoIds へ入れる + 新規項目で
+	 * 置き換える」の 2 つに分かれるため、対応関係が配列から復元できない。転送の完了を
+	 * 待たずに送信素材を作る `uploads.getReady` は、この項目を除外するときに元動画の
+	 * 削除も取り消す必要があり、そのためにリンクを永続させる。フック内に持つと
+	 * remount で失われ、「元動画が消えて差し替え後も入らない」状態が復活する
+	 */
+	replacesId?: string;
 };
 
 export type VideoExisting = VideoBase & {
@@ -30,6 +40,9 @@ export type VideoExisting = VideoBase & {
 };
 
 export type Video = VideoNew | VideoExisting;
+
+/** 転送が完了し転送参照が確定した新規動画 */
+export type VideoUploaded = VideoNew & { uploadRef: string };
 
 export type ProcessFileFn = (file: File) => Promise<File>;
 
@@ -81,6 +94,9 @@ export const VideoUtils = {
 			file: newFile,
 			uploadRef: undefined,
 			thumbnail: video.thumbnail,
+			// 差し替えで生まれた項目のファイルをさらに選び直しても、元動画との
+			// 対応は維持する
+			...(video.replacesId !== undefined && { replacesId: video.replacesId }),
 		};
 	},
 
@@ -99,7 +115,10 @@ export const VideoUtils = {
 		existingVideo: VideoExisting,
 		newFile: File,
 	): { deletedId: string; newVideo: VideoNew } => {
-		const newVideo = VideoUtils.createNew(existingVideo.tempId, newFile);
+		const newVideo: VideoNew = {
+			...VideoUtils.createNew(existingVideo.tempId, newFile),
+			replacesId: existingVideo.id,
+		};
 		return { deletedId: existingVideo.id, newVideo };
 	},
 
@@ -141,6 +160,37 @@ export const VideoUtils = {
 		}
 		return null;
 	},
+
+	/**
+	 * 登録が確定した新規動画を既存動画へ昇格させる。
+	 *
+	 * 引数の型が「転送完了済みでなければ昇格できない」という前提を表現する。
+	 * `uploadedUrl` を必須にしているのは、転送参照が不透明トークンの場合に URL を
+	 * 導出できないため。省略を許すと、表示できない値を持つ `VideoExisting`
+	 * （動画が壊れて見える状態）を作れてしまう。`uploadRef` も同じ理由で引き継がない。
+	 *
+	 * `thumbnailUrl` を省略すると「サムネイル無しの既存動画」になる。サムネイルも
+	 * 保存したなら渡すこと。`thumbnailRemoved` は false に戻す（保存後の項目は
+	 * サーバ側の状態そのものなので、未反映の削除要求は残っていない）
+	 */
+	markSaved: (
+		video: VideoUploaded,
+		params: { id: string; uploadedUrl: string; thumbnailUrl?: string },
+	): VideoExisting => ({
+		tempId: video.tempId,
+		status: VideoFormStatus.Existing,
+		id: params.id,
+		file: undefined,
+		uploadedUrl: params.uploadedUrl,
+		thumbnail:
+			params.thumbnailUrl !== undefined
+				? {
+						source: ThumbnailSource.Existing,
+						uploadedUrl: params.thumbnailUrl,
+					}
+				: null,
+		thumbnailRemoved: false,
+	}),
 
 	// 動画にサムネイルを設定（VideoNew用）
 	setThumbnail: (video: VideoNew, thumbnail: Thumbnail): VideoNew => {
@@ -279,6 +329,22 @@ if (import.meta.vitest) {
 				const result = VideoUtils.updateNewVideoFile(original, newFile);
 				expect(result.tempId).toBe("temp_keep-me");
 			});
+
+			it("replacesId が保持されること（選び直しでリンクが切れない）", () => {
+				const original = makeNew({ replacesId: "id-original" });
+				const newFile = new File(["new"], "new.mp4", { type: "video/mp4" });
+
+				const result = VideoUtils.updateNewVideoFile(original, newFile);
+				expect(result.replacesId).toBe("id-original");
+			});
+
+			it("replacesId が無ければキーも生えないこと", () => {
+				const original = makeNew();
+				const newFile = new File(["new"], "new.mp4", { type: "video/mp4" });
+
+				const result = VideoUtils.updateNewVideoFile(original, newFile);
+				expect("replacesId" in result).toBe(false);
+			});
 		});
 
 		describe("replaceExisting", () => {
@@ -305,6 +371,17 @@ if (import.meta.vitest) {
 				const result = VideoUtils.replaceExisting(existing, newFile);
 
 				expect(result.newVideo.tempId).toBe("temp_keep-me");
+			});
+
+			it("差し替え元の id を replacesId に持つこと", () => {
+				const existing = makeExisting({ id: "id-original" });
+				const newFile = new File(["data"], "replace.mp4", {
+					type: "video/mp4",
+				});
+
+				const result = VideoUtils.replaceExisting(existing, newFile);
+
+				expect(result.newVideo.replacesId).toBe("id-original");
 			});
 		});
 
@@ -389,6 +466,76 @@ if (import.meta.vitest) {
 					thumbnailRemoved: false,
 				});
 				expect(VideoUtils.resolveThumbnailForSubmit(video)).toBeNull();
+			});
+		});
+
+		describe("markSaved", () => {
+			const makeUploaded = () => ({
+				...makeNew({ tempId: "temp_up" }),
+				uploadRef: "upload-token-1",
+			});
+
+			it("VideoNew → VideoExisting に昇格すること", () => {
+				const result = VideoUtils.markSaved(makeUploaded(), {
+					id: "id-1",
+					uploadedUrl: "https://s3.example.com/up.mp4",
+				});
+
+				expect(result.status).toBe(VideoFormStatus.Existing);
+				expect(result.id).toBe("id-1");
+				expect(result.tempId).toBe("temp_up");
+				expect(result.file).toBeUndefined();
+				expect(result.uploadedUrl).toBe("https://s3.example.com/up.mp4");
+			});
+
+			it("thumbnailUrl を渡すと既存サムネイルになること", () => {
+				const result = VideoUtils.markSaved(makeUploaded(), {
+					id: "id-1",
+					uploadedUrl: "https://s3.example.com/up.mp4",
+					thumbnailUrl: "https://s3.example.com/up-thumb.jpg",
+				});
+
+				expect(result.thumbnail).toEqual({
+					source: ThumbnailSource.Existing,
+					uploadedUrl: "https://s3.example.com/up-thumb.jpg",
+				});
+			});
+
+			it("thumbnailUrl 省略時は thumbnail: null", () => {
+				const result = VideoUtils.markSaved(makeUploaded(), {
+					id: "id-1",
+					uploadedUrl: "https://s3.example.com/up.mp4",
+				});
+
+				expect(result.thumbnail).toBeNull();
+			});
+
+			it("thumbnailRemoved は false に戻ること", () => {
+				const result = VideoUtils.markSaved(
+					{
+						...makeUploaded(),
+						thumbnail: {
+							source: ThumbnailSource.Upload,
+							file: new File(["t"], "t.jpg", { type: "image/jpeg" }),
+						},
+					},
+					{
+						id: "id-1",
+						uploadedUrl: "https://s3.example.com/up.mp4",
+						thumbnailUrl: "https://s3.example.com/up-thumb.jpg",
+					},
+				);
+
+				expect(result.thumbnailRemoved).toBe(false);
+			});
+
+			it("uploadRef は引き継がないこと（表示に使える保証が無い）", () => {
+				const result = VideoUtils.markSaved(makeUploaded(), {
+					id: "id-1",
+					uploadedUrl: "https://s3.example.com/up.mp4",
+				});
+
+				expect("uploadRef" in result).toBe(false);
 			});
 		});
 

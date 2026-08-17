@@ -122,6 +122,68 @@ describe("buildSubmitPayload", () => {
 		expect(deletedIds).not.toBe(source);
 	});
 
+	it("除外した差し替え項目は元動画を同じ位置へ戻し、削除も取り消す", () => {
+		const head = makeNewVideo({ tempId: "temp_head", uploadRef: "ref-head" });
+		const replacement = makeNewVideo({
+			tempId: "temp_replacement",
+			replacesId: "id-original",
+		});
+
+		const { videos, deletedIds } = buildSubmitPayload(
+			[head, replacement],
+			["id-original"],
+			new Set(["temp_replacement"]),
+		);
+
+		expect(videos).toEqual([
+			{ status: VideoFormStatus.New, uploadRef: "ref-head", thumbnail: null },
+			{
+				status: VideoFormStatus.Existing,
+				id: "id-original",
+				thumbnail: null,
+			},
+		]);
+		expect(deletedIds).toEqual([]);
+	});
+
+	it("同じ replacesId を持つ項目が複数あっても元動画は 1 度だけ戻る", () => {
+		const a = makeNewVideo({ tempId: "temp_a", replacesId: "id-original" });
+		const b = makeNewVideo({ tempId: "temp_b", replacesId: "id-original" });
+
+		const { videos, deletedIds } = buildSubmitPayload(
+			[a, b],
+			["id-original"],
+			new Set(["temp_a", "temp_b"]),
+		);
+
+		expect(videos).toEqual([
+			{
+				status: VideoFormStatus.Existing,
+				id: "id-original",
+				thumbnail: null,
+			},
+		]);
+		expect(deletedIds).toEqual([]);
+	});
+
+	it("除外していない差し替え項目では元動画の削除を残す", () => {
+		const replacement = makeNewVideo({
+			tempId: "temp_replacement",
+			uploadRef: "ref-1",
+			replacesId: "id-original",
+		});
+
+		const { videos, deletedIds } = buildSubmitPayload(
+			[replacement],
+			["id-original"],
+		);
+
+		expect(videos).toEqual([
+			{ status: VideoFormStatus.New, uploadRef: "ref-1", thumbnail: null },
+		]);
+		expect(deletedIds).toEqual(["id-original"]);
+	});
+
 	it("excluded に入れた tempId は素材から外す", () => {
 		const a = makeNewVideo({ tempId: "temp_a", uploadRef: "ref-a" });
 		const b = makeNewVideo({ tempId: "temp_b" });

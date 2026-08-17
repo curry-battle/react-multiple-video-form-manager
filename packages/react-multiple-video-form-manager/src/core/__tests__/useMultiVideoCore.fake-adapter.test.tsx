@@ -1787,6 +1787,48 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			expect(ready.videos).toEqual([]);
 		});
 
+		it("差し替え中の項目を除外すると元動画が同じ位置へ戻る", async () => {
+			const { uploadFile } = createUploadSpy();
+			const head = makeExistingVideo({ tempId: "temp_head", id: "id-head" });
+			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
+			const { result } = await renderCore([head, ex], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.changeFile("temp_ex", videoFile("n.mp4"));
+			});
+			expect(result.current.raw.deletedVideoIds).toEqual(["id-ex"]);
+
+			const ready = result.current.uploads.getReady();
+
+			expect(ready.excludedTempIds).toEqual(["temp_ex"]);
+			expect(ready.videos).toEqual([
+				{ status: VideoFormStatus.Existing, id: "id-head", thumbnail: null },
+				{ status: VideoFormStatus.Existing, id: "id-ex", thumbnail: null },
+			]);
+			// 元動画を戻すなら削除も取り消す
+			expect(ready.deletedIds).toEqual([]);
+		});
+
+		it("差し替え後にファイルを選び直しても元動画への対応が切れない", async () => {
+			const { uploadFile } = createUploadSpy();
+			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
+			const { result } = await renderCore([ex], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.changeFile("temp_ex", videoFile("1.mp4"));
+			});
+			await act(async () => {
+				await result.current.handlers.changeFile("temp_ex", videoFile("2.mp4"));
+			});
+
+			expect(firstVideo(result).replacesId).toBe("id-ex");
+			const ready = result.current.uploads.getReady();
+			expect(ready.videos).toEqual([
+				{ status: VideoFormStatus.Existing, id: "id-ex", thumbnail: null },
+			]);
+			expect(ready.deletedIds).toEqual([]);
+		});
+
 		it("uploadFile 未設定なら新規項目を除外しない", async () => {
 			const { result } = await renderCore();
 
