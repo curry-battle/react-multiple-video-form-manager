@@ -112,9 +112,9 @@ export function useMultiVideoCore(
 	const uploadOnSelectRef = useRef(uploadOnSelect);
 	uploadOnSelectRef.current = uploadOnSelect;
 
-	const notifyOrphan = useCallback((uploadedUrl: string) => {
+	const notifyOrphan = useCallback((uploadRef: string) => {
 		try {
-			uploadOnSelectRef.current?.onOrphanedUpload?.(uploadedUrl);
+			uploadOnSelectRef.current?.onOrphanedUpload?.(uploadRef);
 		} catch {
 			// cleanup hook の失敗は主操作の制御フローを壊さない
 		}
@@ -229,12 +229,12 @@ export function useMultiVideoCore(
 		async (
 			file: File,
 			errorMessage: () => string,
-		): Promise<{ uploadedUrl: string } | "skip" | "error"> => {
+		): Promise<{ uploadRef: string } | "skip" | "error"> => {
 			const fn = uploadOnSelectRef.current?.uploadFile;
 			if (!fn) return "skip";
 			try {
 				const result = await fn(file);
-				return { uploadedUrl: result.uploadedUrl };
+				return { uploadRef: result.uploadRef };
 			} catch (err) {
 				onErrorRef.current?.({
 					type: "upload_file",
@@ -251,12 +251,12 @@ export function useMultiVideoCore(
 		async (
 			file: File,
 			errorMessage: () => string,
-		): Promise<{ uploadedUrl: string } | "skip" | "error"> => {
+		): Promise<{ uploadRef: string } | "skip" | "error"> => {
 			const fn = uploadOnSelectRef.current?.uploadThumbnailFile;
 			if (!fn) return "skip";
 			try {
 				const result = await fn(file);
-				return { uploadedUrl: result.uploadedUrl };
+				return { uploadRef: result.uploadRef };
 			} catch (err) {
 				onErrorRef.current?.({
 					type: "upload_thumbnail_file",
@@ -311,18 +311,18 @@ export function useMultiVideoCore(
 					msgRef.current.uploadFile,
 				);
 				if (uploadResult === "error") return false;
-				const uploadedUrl =
-					uploadResult === "skip" ? undefined : uploadResult.uploadedUrl;
+				const uploadRef =
+					uploadResult === "skip" ? undefined : uploadResult.uploadRef;
 
 				const ad = adapterRef.current;
 				const result = ops.addVideo(
 					ad.getVideos(),
 					processedFile,
 					maxVideos,
-					uploadedUrl,
+					uploadRef,
 				);
 				if (!result.added) {
-					if (uploadedUrl) notifyOrphan(uploadedUrl);
+					if (uploadRef) notifyOrphan(uploadRef);
 					onErrorRef.current?.({
 						type: "max_videos",
 						message: msgRef.current.maxVideos(maxVideos as number),
@@ -378,24 +378,24 @@ export function useMultiVideoCore(
 				);
 				if (isEpochStale(tempId, epoch)) {
 					if (uploadResult !== "error" && uploadResult !== "skip") {
-						notifyOrphan(uploadResult.uploadedUrl);
+						notifyOrphan(uploadResult.uploadRef);
 					}
 					return false;
 				}
 				if (uploadResult === "error") return false;
 
-				const uploadedUrl =
-					uploadResult === "skip" ? undefined : uploadResult.uploadedUrl;
+				const uploadRef =
+					uploadResult === "skip" ? undefined : uploadResult.uploadRef;
 
 				const ad = adapterRef.current;
 				const result = ops.changeFile(
 					ad.getVideos(),
 					tempId,
 					processedFile,
-					uploadedUrl,
+					uploadRef,
 				);
 				if (!result.changed) {
-					if (uploadedUrl) notifyOrphan(uploadedUrl);
+					if (uploadRef) notifyOrphan(uploadRef);
 					return false;
 				}
 				ad.setVideos(result.videos);
@@ -517,17 +517,17 @@ export function useMultiVideoCore(
 				);
 				if (isEpochStale(tempId, epoch)) {
 					if (uploadResult !== "error" && uploadResult !== "skip") {
-						notifyOrphan(uploadResult.uploadedUrl);
+						notifyOrphan(uploadResult.uploadRef);
 					}
 					return false;
 				}
 				if (uploadResult === "error") return false;
-				const uploadedUrl =
-					uploadResult === "skip" ? undefined : uploadResult.uploadedUrl;
+				const uploadRef =
+					uploadResult === "skip" ? undefined : uploadResult.uploadRef;
 
-				const thumbnail = { ...captured, uploadedUrl };
+				const thumbnail = { ...captured, uploadRef };
 				if (!updateThumbnail(tempId, thumbnail)) {
-					if (uploadedUrl) notifyOrphan(uploadedUrl);
+					if (uploadRef) notifyOrphan(uploadRef);
 					return false;
 				}
 				await safeValidate();
@@ -584,20 +584,20 @@ export function useMultiVideoCore(
 				);
 				if (isEpochStale(tempId, epoch)) {
 					if (uploadResult !== "error" && uploadResult !== "skip") {
-						notifyOrphan(uploadResult.uploadedUrl);
+						notifyOrphan(uploadResult.uploadRef);
 					}
 					return false;
 				}
 				if (uploadResult === "error") return false;
-				const uploadedUrl =
-					uploadResult === "skip" ? undefined : uploadResult.uploadedUrl;
+				const uploadRef =
+					uploadResult === "skip" ? undefined : uploadResult.uploadRef;
 
 				const thumbnail = {
 					...ThumbnailUtils.fromFile(processedFile),
-					uploadedUrl,
+					uploadRef,
 				};
 				if (!updateThumbnail(tempId, thumbnail)) {
-					if (uploadedUrl) notifyOrphan(uploadedUrl);
+					if (uploadRef) notifyOrphan(uploadRef);
 					return false;
 				}
 

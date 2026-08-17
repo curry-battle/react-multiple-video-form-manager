@@ -42,9 +42,9 @@ describe("prepareForSubmit", () => {
 		});
 	});
 
-	it("resolves new videos with upload-on-select (uploadedUrl already set)", async () => {
+	it("resolves new videos with upload-on-select (uploadRef already set)", async () => {
 		const video = makeNewVideo({
-			uploadedUrl: "https://s3.example.com/already-uploaded.mp4",
+			uploadRef: "https://s3.example.com/already-uploaded.mp4",
 		});
 		const result = await prepareForSubmit([video], []);
 
@@ -56,7 +56,7 @@ describe("prepareForSubmit", () => {
 	it("uploads new videos via uploadFile callback", async () => {
 		const video = makeNewVideo();
 		const uploadFile = vi.fn().mockResolvedValue({
-			uploadedUrl: "https://s3.example.com/uploaded.mp4",
+			uploadRef: "https://s3.example.com/uploaded.mp4",
 		});
 
 		const result = await prepareForSubmit([video], [], { uploadFile });
@@ -67,9 +67,9 @@ describe("prepareForSubmit", () => {
 		);
 	});
 
-	it("skips upload for new videos that already have uploadedUrl (upload-on-select)", async () => {
+	it("skips upload for new videos that already have uploadRef (upload-on-select)", async () => {
 		const video = makeNewVideo({
-			uploadedUrl: "https://s3.example.com/on-select.mp4",
+			uploadRef: "https://s3.example.com/on-select.mp4",
 		});
 		const uploadFile = vi.fn();
 
@@ -78,7 +78,7 @@ describe("prepareForSubmit", () => {
 		expect(uploadFile).not.toHaveBeenCalled();
 	});
 
-	it("throws PrepareForSubmitError when new video has no uploadedUrl and no uploadFile", async () => {
+	it("throws PrepareForSubmitError when new video has no uploadRef and no uploadFile", async () => {
 		const video = makeNewVideo();
 
 		await expect(prepareForSubmit([video], [])).rejects.toThrow(
@@ -91,20 +91,20 @@ describe("prepareForSubmit", () => {
 		const v2 = makeNewVideo({ tempId: "temp_2" });
 		const v3 = makeNewVideo({ tempId: "temp_3" });
 
-		let resolveSecond: (v: { uploadedUrl: string }) => void;
-		const secondPromise = new Promise<{ uploadedUrl: string }>((r) => {
+		let resolveSecond: (v: { uploadRef: string }) => void;
+		const secondPromise = new Promise<{ uploadRef: string }>((r) => {
 			resolveSecond = r;
 		});
 
 		const uploadFile = vi
 			.fn()
 			.mockResolvedValueOnce({
-				uploadedUrl: "https://s3.example.com/v1.mp4",
+				uploadRef: "https://s3.example.com/v1.mp4",
 			})
 			.mockRejectedValueOnce(new Error("upload failed"))
 			.mockImplementationOnce(() => {
 				// v3 resolves after v2 fails — allSettled waits for this
-				resolveSecond!({ uploadedUrl: "https://s3.example.com/v3.mp4" });
+				resolveSecond!({ uploadRef: "https://s3.example.com/v3.mp4" });
 				return secondPromise;
 			});
 
@@ -114,9 +114,9 @@ describe("prepareForSubmit", () => {
 		} catch (err) {
 			expect(err).toBeInstanceOf(PrepareForSubmitError);
 			const e = err as PrepareForSubmitError;
-			expect(e.successfulUploadUrls).toContain("https://s3.example.com/v1.mp4");
-			expect(e.successfulUploadUrls).toContain("https://s3.example.com/v3.mp4");
-			expect(e.successfulUploadUrls).toHaveLength(2);
+			expect(e.successfulUploadRefs).toContain("https://s3.example.com/v1.mp4");
+			expect(e.successfulUploadRefs).toContain("https://s3.example.com/v3.mp4");
+			expect(e.successfulUploadRefs).toHaveLength(2);
 		}
 	});
 
@@ -126,7 +126,7 @@ describe("prepareForSubmit", () => {
 		const uploadFile = vi
 			.fn()
 			.mockResolvedValueOnce({
-				uploadedUrl: "https://s3.example.com/success.mp4",
+				uploadRef: "https://s3.example.com/success.mp4",
 			})
 			.mockRejectedValueOnce(new Error("upload failed"));
 
@@ -134,7 +134,7 @@ describe("prepareForSubmit", () => {
 			await prepareForSubmit([v1, v2], [], { uploadFile });
 		} catch (err) {
 			expect(err).toBeInstanceOf(PrepareForSubmitError);
-			expect((err as PrepareForSubmitError).successfulUploadUrls).toContain(
+			expect((err as PrepareForSubmitError).successfulUploadRefs).toContain(
 				"https://s3.example.com/success.mp4",
 			);
 		}
@@ -172,10 +172,10 @@ describe("prepareForSubmit", () => {
 		});
 		const uploadFile = vi
 			.fn()
-			.mockResolvedValue({ uploadedUrl: "https://s3.example.com/video.mp4" });
+			.mockResolvedValue({ uploadRef: "https://s3.example.com/video.mp4" });
 		const uploadThumbnailFile = vi
 			.fn()
-			.mockResolvedValue({ uploadedUrl: "https://s3.example.com/thumb.jpg" });
+			.mockResolvedValue({ uploadRef: "https://s3.example.com/thumb.jpg" });
 
 		const result = await prepareForSubmit([video], [], {
 			uploadFile,
@@ -193,11 +193,11 @@ describe("prepareForSubmit", () => {
 	it("uses pre-uploaded thumbnail URL (upload-on-select)", async () => {
 		const thumbFile = new File(["thumb"], "thumb.jpg", { type: "image/jpeg" });
 		const video = makeNewVideo({
-			uploadedUrl: "https://s3.example.com/video.mp4",
+			uploadRef: "https://s3.example.com/video.mp4",
 			thumbnail: {
 				source: ThumbnailSource.Upload,
 				file: thumbFile,
-				uploadedUrl: "https://s3.example.com/thumb-on-select.jpg",
+				uploadRef: "https://s3.example.com/thumb-on-select.jpg",
 			},
 		});
 		const uploadThumbnailFile = vi.fn();
@@ -218,7 +218,7 @@ describe("prepareForSubmit", () => {
 
 	it("uploads frame-captured thumbnail (blob → File conversion)", async () => {
 		const video = makeNewVideo({
-			uploadedUrl: "https://s3.example.com/video.mp4",
+			uploadRef: "https://s3.example.com/video.mp4",
 			thumbnail: {
 				source: ThumbnailSource.Frame,
 				blob: new Blob(["thumb"], { type: "image/jpeg" }),
@@ -227,7 +227,7 @@ describe("prepareForSubmit", () => {
 		});
 		const uploadThumbnailFile = vi
 			.fn()
-			.mockResolvedValue({ uploadedUrl: "https://s3.example.com/thumb.jpg" });
+			.mockResolvedValue({ uploadRef: "https://s3.example.com/thumb.jpg" });
 
 		const result = await prepareForSubmit([video], [], { uploadThumbnailFile });
 
@@ -267,7 +267,7 @@ describe("prepareForSubmit", () => {
 			thumbnailRemoved: true,
 		});
 		const uploadThumbnailFile = vi.fn().mockResolvedValue({
-			uploadedUrl: "https://s3.example.com/replaced-thumb.jpg",
+			uploadRef: "https://s3.example.com/replaced-thumb.jpg",
 		});
 
 		const result = await prepareForSubmit([video], [], { uploadThumbnailFile });
@@ -279,10 +279,10 @@ describe("prepareForSubmit", () => {
 		});
 	});
 
-	it("throws when thumbnail has no uploadedUrl and no uploadThumbnailFile", async () => {
+	it("throws when thumbnail has no uploadRef and no uploadThumbnailFile", async () => {
 		const thumbFile = new File(["thumb"], "thumb.jpg", { type: "image/jpeg" });
 		const video = makeNewVideo({
-			uploadedUrl: "https://s3.example.com/video.mp4",
+			uploadRef: "https://s3.example.com/video.mp4",
 			thumbnail: { source: ThumbnailSource.Upload, file: thumbFile },
 		});
 
@@ -290,7 +290,7 @@ describe("prepareForSubmit", () => {
 			PrepareForSubmitError,
 		);
 		await expect(prepareForSubmit([video], [])).rejects.toThrow(
-			/Missing uploadedUrl for thumbnail/,
+			/Missing uploadRef for thumbnail/,
 		);
 	});
 });

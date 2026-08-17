@@ -22,7 +22,7 @@ describe("useRhfVideoFieldAdapter dirty 伝播", () => {
 			status: VideoFormStatus.New,
 			id: undefined,
 			file: new File(["v"], "v.mp4", { type: "video/mp4" }),
-			uploadedUrl: undefined,
+			uploadRef: undefined,
 			thumbnail,
 		};
 

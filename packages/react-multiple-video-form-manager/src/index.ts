@@ -55,6 +55,7 @@ export type {
 	FormWithVideoField,
 	ItemHandlers,
 	SingleVideoError,
+	VideoErrorFieldKey,
 	VideoFieldError,
 	VideoItem,
 	VideoSchemaOptions,
@@ -63,6 +64,7 @@ export type {
 export {
 	collectErrorMessages,
 	defaultCoreMessages,
+	VIDEO_ERROR_FIELD_KEYS,
 } from "./core/types/VideoSchemaTypes";
 export { VideoFormStatus } from "./core/types/VideoStatus";
 export {

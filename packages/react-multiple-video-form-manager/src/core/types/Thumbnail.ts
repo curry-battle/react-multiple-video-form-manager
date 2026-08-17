@@ -13,13 +13,13 @@ export type ThumbnailFromFrame = {
 	source: typeof ThumbnailSource.Frame;
 	blob: Blob;
 	timestamp: number;
-	uploadedUrl?: string;
+	uploadRef?: string;
 };
 
 export type ThumbnailFromUpload = {
 	source: typeof ThumbnailSource.Upload;
 	file: File;
-	uploadedUrl?: string;
+	uploadRef?: string;
 };
 
 export type ThumbnailExisting = {

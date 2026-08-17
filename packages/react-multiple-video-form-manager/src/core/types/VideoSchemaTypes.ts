@@ -89,13 +89,30 @@ export type VideoFieldError = {
 };
 
 /**
+ * 項目単位のエラーを載せられるフィールド。**スキーマが検証するキーはすべてここに要る。**
+ * 一覧から漏れたキーのエラーは RHF 側では黙って捨てられ、TanStack 側では root へ退避するので、
+ * 項目に届かないことに気づけない。
+ *
+ * 順序は `collectErrorMessages` が返すメッセージの順序になる。
+ */
+export const VIDEO_ERROR_FIELD_KEYS = [
+	"file",
+	"thumbnail",
+	"id",
+	"uploadedUrl",
+	"uploadRef",
+	"status",
+	"thumbnailRemoved",
+	"replacesId",
+] as const;
+
+export type VideoErrorFieldKey = (typeof VIDEO_ERROR_FIELD_KEYS)[number];
+
+/**
  * 中立エラーモデル: 1動画分のフィールド別エラー
  */
 export type SingleVideoError = Partial<
-	Record<
-		"file" | "thumbnail" | "id" | "uploadedUrl" | "status",
-		VideoFieldError
-	>
+	Record<VideoErrorFieldKey, VideoFieldError>
 >;
 
 /**
@@ -129,20 +146,12 @@ export type VideoItem = {
 	handlers: ItemHandlers;
 };
 
-const ERROR_FIELDS: ReadonlyArray<keyof SingleVideoError> = [
-	"file",
-	"thumbnail",
-	"id",
-	"uploadedUrl",
-	"status",
-];
-
 export function collectErrorMessages(
 	errors: SingleVideoError | undefined,
 ): string[] {
 	if (!errors) return [];
 	const messages: string[] = [];
-	for (const field of ERROR_FIELDS) {
+	for (const field of VIDEO_ERROR_FIELD_KEYS) {
 		const msg = errors[field]?.message;
 		if (msg) messages.push(msg);
 	}

@@ -4,9 +4,9 @@ import { render } from "vitest-browser-react";
 import { harnesses, makeFile } from "./TestHarness";
 
 describe.each(harnesses)("Upload Flow (%s)", (_label, Harness) => {
-	it("uploadFile 成功 → uploadedUrl が動画に反映される", async () => {
+	it("uploadFile 成功 → uploadRef が動画に反映される", async () => {
 		const uploadFile = vi.fn(async () => ({
-			uploadedUrl: "https://s3.example.com/uploaded.mp4",
+			uploadRef: "https://s3.example.com/uploaded.mp4",
 		}));
 
 		await render(<Harness uploadFile={uploadFile} />);
@@ -19,7 +19,7 @@ describe.each(harnesses)("Upload Flow (%s)", (_label, Harness) => {
 		await expect.element(page.getByTestId("item-count")).toHaveTextContent("1");
 		await expect.element(page.getByTestId("status-0")).toHaveTextContent("new");
 		await expect
-			.element(page.getByTestId("uploaded-url-0"))
+			.element(page.getByTestId("upload-ref-0"))
 			.toHaveTextContent("https://s3.example.com/uploaded.mp4");
 		expect(uploadFile).toHaveBeenCalledOnce();
 	});
@@ -87,7 +87,7 @@ describe.each(harnesses)("Upload Flow (%s)", (_label, Harness) => {
 		});
 		const uploadFile = vi.fn(async (file: File) => {
 			expect(file.name).toBe("resized_video.mp4");
-			return { uploadedUrl: "https://s3.example.com/resized.mp4" };
+			return { uploadRef: "https://s3.example.com/resized.mp4" };
 		});
 
 		await render(<Harness processFile={processFile} uploadFile={uploadFile} />);
@@ -99,17 +99,17 @@ describe.each(harnesses)("Upload Flow (%s)", (_label, Harness) => {
 
 		await expect.element(page.getByTestId("item-count")).toHaveTextContent("1");
 		await expect
-			.element(page.getByTestId("uploaded-url-0"))
+			.element(page.getByTestId("upload-ref-0"))
 			.toHaveTextContent("https://s3.example.com/resized.mp4");
 		expect(processFile).toHaveBeenCalledOnce();
 		expect(uploadFile).toHaveBeenCalledOnce();
 	});
 
 	it("upload-on-select 進行中に isBusy が true になる", async () => {
-		let resolveUpload!: (value: { uploadedUrl: string }) => void;
+		let resolveUpload!: (value: { uploadRef: string }) => void;
 		const uploadFile = vi.fn(
 			() =>
-				new Promise<{ uploadedUrl: string }>((resolve) => {
+				new Promise<{ uploadRef: string }>((resolve) => {
 					resolveUpload = resolve;
 				}),
 		);
@@ -127,7 +127,7 @@ describe.each(harnesses)("Upload Flow (%s)", (_label, Harness) => {
 
 		await expect.element(page.getByTestId("is-busy")).toHaveTextContent("true");
 
-		resolveUpload({ uploadedUrl: "https://s3.example.com/done.mp4" });
+		resolveUpload({ uploadRef: "https://s3.example.com/done.mp4" });
 
 		await expect
 			.element(page.getByTestId("is-busy"))
@@ -135,7 +135,7 @@ describe.each(harnesses)("Upload Flow (%s)", (_label, Harness) => {
 		await expect.element(page.getByTestId("item-count")).toHaveTextContent("1");
 	});
 
-	it("uploadFile 未設定時は uploadedUrl なしで動画が即追加される", async () => {
+	it("uploadFile 未設定時は uploadRef なしで動画が即追加される", async () => {
 		await render(<Harness />);
 
 		await userEvent.upload(
@@ -145,7 +145,7 @@ describe.each(harnesses)("Upload Flow (%s)", (_label, Harness) => {
 
 		await expect.element(page.getByTestId("item-count")).toHaveTextContent("1");
 		await expect
-			.element(page.getByTestId("uploaded-url-0"))
+			.element(page.getByTestId("upload-ref-0"))
 			.not.toBeInTheDocument();
 	});
 });

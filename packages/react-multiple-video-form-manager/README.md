@@ -235,7 +235,7 @@ import { getFileFromChangeEvent } from "@curry-battle/react-multiple-video-form-
 
 **Default: upload-on-submit** — first-time users only need to learn `prepareForSubmit(options)`.
 
-**upload-on-select** is an optimization for large files: uploading early makes submit lighter. Both strategies can coexist safely: `prepareForSubmit` skips items that already have an `uploadedUrl`, so passing `options` while using `uploadOnSelect` never double-uploads.
+**upload-on-select** is an optimization for large files: uploading early makes submit lighter. Both strategies can coexist safely: `prepareForSubmit` skips items that already carry an `uploadRef`, so passing `options` while using `uploadOnSelect` never double-uploads.
 
 ## Optional Props
 
@@ -281,7 +281,7 @@ The library uses a **neutral error model** shared across form adapters.
 
 ```ts
 type VideoFieldError = { message?: string; type?: string; source?: unknown };
-type SingleVideoError = Partial<Record<"file" | "thumbnail" | "id" | "uploadedUrl" | "status", VideoFieldError>>;
+type SingleVideoError = Partial<Record<VideoErrorFieldKey, VideoFieldError>>;  // keys: VIDEO_ERROR_FIELD_KEYS
 type VideosError = {
   items: Record<string, SingleVideoError>;  // tempId-keyed per-item errors
   root: VideoFieldError[];                      // array-level errors (maxVideos etc.)
@@ -290,7 +290,7 @@ type VideosError = {
 
 ## Submit Flow
 
-`prepareForSubmit` resolves all video/thumbnail state into a server-ready payload where every `uploadedUrl` is filled in. When `uploadFile` / `uploadThumbnailFile` are passed in `options`, **pending files are uploaded inside this call** before the result is returned.
+`prepareForSubmit` resolves all video/thumbnail state into a server-ready payload where every `uploadedUrl` is filled in (from the item's `uploadRef` for new items, from the stored URL for existing ones). When `uploadFile` / `uploadThumbnailFile` are passed in `options`, **pending files are uploaded inside this call** before the result is returned.
 
 ### upload-on-submit (default)
 
@@ -324,9 +324,9 @@ Pass the callbacks via the `uploadOnSelect` controller prop — files are upload
 />
 ```
 
-Both strategies can coexist: `prepareForSubmit` skips items that already have an `uploadedUrl`, so passing `options` while using `uploadOnSelect` never double-uploads. If `uploadOnSelect` only configures part of the upload set (e.g. only `uploadFile`), the unconfigured kind (thumbnails) is still uploaded at submit time when `options` are passed to `prepareForSubmit`.
+Both strategies can coexist: `prepareForSubmit` skips items that already carry an `uploadRef`, so passing `options` while using `uploadOnSelect` never double-uploads. If `uploadOnSelect` only configures part of the upload set (e.g. only `uploadFile`), the unconfigured kind (thumbnails) is still uploaded at submit time when `options` are passed to `prepareForSubmit`.
 
-If any upload fails, it rejects with `PrepareForSubmitError`; its `successfulUploadUrls` lists the URLs uploaded before the failure, so you can clean up orphaned files. A standalone pure version `prepareForSubmit(videos, deletedIds, { uploadFile?, uploadThumbnailFile? })` is also exported from the core entry.
+If any upload fails, it rejects with `PrepareForSubmitError`; its `successfulUploadRefs` lists the upload references produced before the failure, so you can clean up orphaned files. A standalone pure version `prepareForSubmit(videos, deletedIds, { uploadFile?, uploadThumbnailFile? })` is also exported from the core entry.
 
 ### Manual thumbnail resolution (escape hatch)
 

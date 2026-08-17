@@ -234,7 +234,7 @@ import { getFileFromChangeEvent } from "@curry-battle/react-multiple-video-form-
 
 **デフォルトは upload-on-submit** — 初見のユーザは `prepareForSubmit(options)` だけ覚えれば OK です。
 
-**upload-on-select** は大容量ファイル向けの最適化です。submit を軽くできます。両方を併用しても安全です: `prepareForSubmit` は `uploadedUrl` 済みの項目をスキップするため、`uploadOnSelect` 使用中に `options` を渡しても二重アップロードにはなりません。
+**upload-on-select** は大容量ファイル向けの最適化です。submit を軽くできます。両方を併用しても安全です: `prepareForSubmit` は `uploadRef` を持つ項目をスキップするため、`uploadOnSelect` 使用中に `options` を渡しても二重アップロードにはなりません。
 
 ## オプション Props
 
@@ -280,7 +280,7 @@ per-item 操作は `item.handlers` 経由:
 
 ```ts
 type VideoFieldError = { message?: string; type?: string; source?: unknown };
-type SingleVideoError = Partial<Record<"file" | "thumbnail" | "id" | "uploadedUrl" | "status", VideoFieldError>>;
+type SingleVideoError = Partial<Record<VideoErrorFieldKey, VideoFieldError>>;  // キーは VIDEO_ERROR_FIELD_KEYS
 type VideosError = {
   items: Record<string, SingleVideoError>;  // tempId をキーとした per-item エラー
   root: VideoFieldError[];                      // 配列レベル（maxVideos 等）
@@ -289,7 +289,7 @@ type VideosError = {
 
 ## サブミットフロー
 
-`prepareForSubmit` は動画・サムネイルの状態をサーバー送信可能な payload に解決します。`options` に `uploadFile` / `uploadThumbnailFile` を渡すと、**このメソッド内で未アップロードのファイルがアップロードされ**、すべての `uploadedUrl` が埋まった状態で返ります。
+`prepareForSubmit` は動画・サムネイルの状態をサーバー送信可能な payload に解決します。`options` に `uploadFile` / `uploadThumbnailFile` を渡すと、**このメソッド内で未アップロードのファイルがアップロードされ**、すべての `uploadedUrl` が埋まった状態で返ります（新規は項目の `uploadRef`、既存は保存済み URL が入ります）。
 
 ### upload-on-submit（デフォルト）
 
@@ -323,9 +323,9 @@ const onSubmit = async () => {
 />
 ```
 
-両方を併用できます: `prepareForSubmit` は `uploadedUrl` 済みの項目をスキップするため、`uploadOnSelect` 使用中に `options` を渡しても二重アップロードにはなりません。`uploadOnSelect` が一部の種類だけ設定されている場合（例: `uploadFile` のみ）、未設定の種類（サムネイル）は `options` を渡した submit 時にアップロードされます。
+両方を併用できます: `prepareForSubmit` は `uploadRef` を持つ項目をスキップするため、`uploadOnSelect` 使用中に `options` を渡しても二重アップロードにはなりません。`uploadOnSelect` が一部の種類だけ設定されている場合（例: `uploadFile` のみ）、未設定の種類（サムネイル）は `options` を渡した submit 時にアップロードされます。
 
-アップロードが 1 件でも失敗すると `PrepareForSubmitError` で reject します。`successfulUploadUrls` に失敗前にアップロード成功した URL が入っているため、孤立ファイルの後始末に使えます。純粋関数版 `prepareForSubmit(videos, deletedIds, { uploadFile?, uploadThumbnailFile? })` もコアエントリから export されています。
+アップロードが 1 件でも失敗すると `PrepareForSubmitError` で reject します。`successfulUploadRefs` に失敗前にアップロードが成功した転送参照が入っているため、孤立ファイルの後始末に使えます。純粋関数版 `prepareForSubmit(videos, deletedIds, { uploadFile?, uploadThumbnailFile? })` もコアエントリから export されています。
 
 ### サムネイルの手動解決（escape hatch）
 

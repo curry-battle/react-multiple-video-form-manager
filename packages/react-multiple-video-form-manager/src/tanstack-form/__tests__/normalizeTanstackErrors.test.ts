@@ -8,7 +8,7 @@ function makeVideo(tempId: string): Video {
 		status: "new",
 		id: undefined,
 		file: new File(["x"], "v.mp4", { type: "video/mp4" }),
-		uploadedUrl: undefined,
+		uploadRef: undefined,
 		thumbnail: null,
 	};
 }

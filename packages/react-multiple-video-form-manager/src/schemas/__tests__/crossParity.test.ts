@@ -5,7 +5,6 @@ import {
 	invalidExistingWithBadId,
 	invalidExistingWithoutUploadedUrl,
 	invalidNewVideoWithBadThumbnailType,
-	invalidNewVideoWithBadUploadedUrl,
 	invalidNewVideoWithoutFile,
 	invalidNewVideoWithWrongType,
 	invalidVideoWithBadStatus,
@@ -15,8 +14,9 @@ import {
 	validExistingVideo,
 	validExistingVideoNoThumbnail,
 	validNewVideo,
+	validNewVideoWithOpaqueUploadRef,
 	validNewVideoWithThumbnail,
-	validNewVideoWithUploadedUrl,
+	validNewVideoWithUploadRef,
 	validThumbnailFromFrame,
 	validThumbnailFromUpload,
 } from "../__testdata__/videoSchemaTestData";
@@ -72,7 +72,12 @@ describe("cross-parity: Zod and Valibot schemas produce identical results", () =
 			[validExistingVideoNoThumbnail],
 			true,
 		],
-		["valid new video with uploadedUrl", [validNewVideoWithUploadedUrl], true],
+		["valid new video with uploadRef", [validNewVideoWithUploadRef], true],
+		[
+			"valid new video with opaque (non-URL) uploadRef",
+			[validNewVideoWithOpaqueUploadRef],
+			true,
+		],
 		["mixed new + existing", [validNewVideo, validExistingVideo], true],
 		["invalid: wrong file type", [invalidNewVideoWithWrongType], false],
 		["invalid: missing file", [invalidNewVideoWithoutFile], false],
@@ -87,7 +92,6 @@ describe("cross-parity: Zod and Valibot schemas produce identical results", () =
 			[invalidNewVideoWithBadThumbnailType],
 			false,
 		],
-		["invalid: bad uploadedUrl", [invalidNewVideoWithBadUploadedUrl], false],
 		[
 			"invalid: exceeds maxVideos",
 			Array.from({ length: 6 }, (_, i) => ({
@@ -134,6 +138,38 @@ describe("cross-parity: Zod and Valibot schemas produce identical results", () =
 		expect(zodResult.success).toBe(expectedSuccess);
 		expect(valibotResult.success).toBe(expectedSuccess);
 		expect(zodResult.success).toBe(valibotResult.success);
+	});
+
+	// 型不一致でも issue が項目内のキーまで指すこと（判別が要る理由は zod.ts の videoUnion）
+	describe("issue path parity", () => {
+		const pathCases: [string, unknown, string][] = [
+			[
+				"existing video with non-boolean thumbnailRemoved",
+				[{ ...validExistingVideo, thumbnailRemoved: "yes" }],
+				"thumbnailRemoved",
+			],
+			[
+				"new video with non-string uploadRef",
+				[{ ...validNewVideo, uploadRef: 42 }],
+				"uploadRef",
+			],
+		];
+
+		it.each(pathCases)("%s → both point at %s", (_label, data, key) => {
+			const zodResult = zodSchema.safeParse(data);
+			const valibotResult = v.safeParse(valibotSchema, data);
+
+			expect(zodResult.success).toBe(false);
+			expect(valibotResult.success).toBe(false);
+
+			const zodPaths = zodResult.error?.issues.map((i) => i.path.join("."));
+			expect(zodPaths).toContain(`0.${key}`);
+
+			const valibotPaths = valibotResult.issues?.map((i) =>
+				(i.path ?? []).map((p: { key: unknown }) => String(p.key)).join("."),
+			);
+			expect(valibotPaths).toContain(`0.${key}`);
+		});
 	});
 
 	describe("idValidation parity", () => {

@@ -14,7 +14,7 @@ const makeNewVideo = (overrides?: Partial<VideoNew>): VideoNew => ({
 	status: VideoFormStatus.New,
 	id: undefined,
 	file: new File(["data"], "test.mp4", { type: "video/mp4" }),
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 	thumbnail: null,
 	...overrides,
 });
@@ -47,7 +47,7 @@ describe("usePreviewUrl", () => {
 		expect(createObjectURL).toHaveBeenCalledWith(video.file);
 	});
 
-	it("VideoExisting に対して uploadedUrl を返すこと", async () => {
+	it("VideoExisting に対して uploadRef を返すこと", async () => {
 		const video = makeExistingVideo();
 		const { result } = await renderHook(() => usePreviewUrl(video));
 		expect(result.current).toBe("https://s3.example.com/video.mp4");
@@ -129,7 +129,7 @@ describe("useThumbnailPreviewUrl", () => {
 		expect(createObjectURL).toHaveBeenCalledWith(thumbnail.file);
 	});
 
-	it("ThumbnailExisting に対して uploadedUrl を返すこと", async () => {
+	it("ThumbnailExisting に対して uploadRef を返すこと", async () => {
 		const thumbnail: AnyThumbnail = {
 			source: ThumbnailSource.Existing,
 			uploadedUrl: "https://s3.example.com/thumb.jpg",

@@ -8,7 +8,7 @@ export function addVideo(
 	videos: readonly Video[],
 	processedFile: File,
 	maxVideos?: number,
-	uploadedUrl?: string,
+	uploadRef?: string,
 ): { videos: Video[]; added: boolean } {
 	if (maxVideos !== undefined && videos.length >= maxVideos) {
 		return { videos: [...videos], added: false };
@@ -17,7 +17,7 @@ export function addVideo(
 	const newVideo = VideoUtils.createNew(
 		generateTempId(),
 		processedFile,
-		uploadedUrl,
+		uploadRef,
 	);
 	return { videos: [...videos, newVideo], added: true };
 }
@@ -26,7 +26,7 @@ export function changeFile(
 	videos: readonly Video[],
 	tempId: string,
 	processedFile: File,
-	uploadedUrl?: string,
+	uploadRef?: string,
 ): { videos: Video[]; changed: boolean; deletedId: string | null } {
 	const index = videos.findIndex((vid) => vid.tempId === tempId);
 	if (index === -1)
@@ -41,8 +41,8 @@ export function changeFile(
 				target,
 				processedFile,
 			);
-			if (uploadedUrl !== undefined) {
-				newVideo.uploadedUrl = uploadedUrl;
+			if (uploadRef !== undefined) {
+				newVideo.uploadRef = uploadRef;
 			}
 			const next = [...videos];
 			next[index] = newVideo;
@@ -50,8 +50,8 @@ export function changeFile(
 		}
 		case VideoFormStatus.New: {
 			const updated = VideoUtils.updateNewVideoFile(target, processedFile);
-			if (uploadedUrl !== undefined) {
-				updated.uploadedUrl = uploadedUrl;
+			if (uploadRef !== undefined) {
+				updated.uploadRef = uploadRef;
 			}
 			const next = [...videos];
 			next[index] = updated;
