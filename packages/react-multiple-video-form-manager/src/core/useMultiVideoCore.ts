@@ -26,6 +26,7 @@ import type { UploadSource } from "./uploadSlots";
 import {
 	applyUploadRef,
 	readUnresolvedSource,
+	readUploadRef,
 	readUploadSource,
 	slotKey,
 } from "./uploadSlots";
@@ -199,11 +200,24 @@ type UploadRecord = {
 );
 
 /**
+ * 同じスロットで書き戻しが連続して自己破棄された回数の上限。
+ *
+ * 1 回は消費側が handlers を介さず adapter へ直接書き込んでファイルを差し替えた場合に
+ * 正常に起こる。2 回連続は adapter が File / Blob の参照を保持していない疑いが濃く、
+ * 放置すると再発行が永久に回るため失敗へ倒す（`VideoFieldAdapter` の doc を参照）
+ */
+const SELF_DISCARD_LIMIT = 2;
+
+/**
  * `uploads.wait` の収束ループで、進捗の無い周回を何回続けたら打ち切るか。
  *
  * 1 回で打ち切ると、待機中のファイル選び直し（元の転送が中断され、新しい転送が
- * まだ結果を出していない周回）を誤って失敗と判定する。契約違反の adapter による
- * ライブロックを可視の失敗へ変換するための上限であり、正常系では到達しない。
+ * まだ結果を出していない周回）を誤って失敗と判定する。
+ *
+ * 既知の違反モード（参照を保持しない adapter、書き込みを捨てる adapter）では
+ * `SELF_DISCARD_LIMIT` 側が先に発火するため、この打ち切りに到達する経路は
+ * 見つかっていない。それでも残すのは、収束ループの停止性を再照合側の実装に
+ * 依存させないため。自己破棄として数えられない破棄経路が将来生まれても、ここで止まる
  */
 const STALLED_ROUND_LIMIT = 2;
 
@@ -262,6 +276,10 @@ export function useMultiVideoCore(
 	const watchedVideos = adapter.videos;
 	const deletedVideoIds = adapter.deletedVideoIds;
 
+	// 参照ではなく有無だけを見る。毎レンダー新しい関数を渡す消費側で
+	// 再照合を無駄に発火させない
+	const hasUploadFile = uploadFile !== undefined;
+
 	const recordsRef = useRef<ReadonlyMap<string, UploadRecord>>(new Map());
 	const [records, setRecordsState] = useState<
 		ReadonlyMap<string, UploadRecord>
@@ -285,6 +303,8 @@ export function useMultiVideoCore(
 	const [progress, setProgressState] = useState<ReadonlyMap<string, number>>(
 		progressRef.current,
 	);
+
+	const selfDiscardsRef = useRef(new Map<string, number>());
 
 	const writeProgress = useCallback(
 		(key: string, fraction: number | undefined) => {
@@ -473,6 +493,19 @@ export function useMultiVideoCore(
 				});
 			};
 
+			/**
+			 * 書き戻しが反映されなかった回数を数え、上限で失敗へ倒す。
+			 *
+			 * 1 回は消費側が handlers を介さず adapter へ直接書き込んだ場合に正常に
+			 * 起こる。2 回連続は adapter 側の契約違反が疑わしく、放置すると再発行が
+			 * 永久に回る
+			 */
+			const countDiscard = (error: Error) => {
+				const count = (selfDiscardsRef.current.get(key) ?? 0) + 1;
+				selfDiscardsRef.current.set(key, count);
+				if (count >= SELF_DISCARD_LIMIT) fail(error);
+			};
+
 			// 進捗イベントはチャンクごとに飛びうる。台帳へそのまま書くと 1 チャンク
 			// ごとに再レンダーが走るため、表示が変わらない報告は捨てる。
 			// 丸めるのは書き込みの判定だけで、保持する値は報告されたまま
@@ -516,11 +549,38 @@ export function useMultiVideoCore(
 						source.token,
 						result.uploadRef,
 					);
-					if (applied === undefined) return;
+					if (applied === undefined) {
+						// 自分がまだ現行レコードなのにスロットの中身が入れ替わっている
+						// （＝自己破棄）。誰も引き継いでいないため、繰り返すなら adapter が
+						// 参照を保持していない疑いが濃い
+						countDiscard(
+							new Error(
+								"upload result was discarded repeatedly; the adapter may not preserve File / Blob references",
+							),
+						);
+						return;
+					}
 
 					const next = [...videos];
 					next[index] = applied;
 					ad.setVideos(next);
+
+					// read-your-writes の契約どおりなら、書き戻した参照は同期 read で
+					// 見える。見えないなら adapter が書き込みを捨てており、発行し直しても
+					// 同じところに戻る。転送参照の解決はフォーム state だけを見るので、
+					// ここで気づかないと再発行が永久に回る
+					const reflected = ad.getVideos().find((vid) => vid.tempId === tempId);
+					if (reflected === undefined) return;
+					if (readUploadRef(reflected, kind) === undefined) {
+						countDiscard(
+							new Error(
+								"upload reference was written but not visible on the next read; the adapter may discard writes",
+							),
+						);
+						return;
+					}
+
+					selfDiscardsRef.current.delete(key);
 
 					writeRecords((draft) => {
 						if (draft.get(key) !== record) return false;
@@ -564,12 +624,19 @@ export function useMultiVideoCore(
 		[writeProgress, writeRecords],
 	);
 
-	/** その項目のスロットに転送すべきものがあれば転送を起動する */
+	/**
+	 * ユーザー操作による転送の起動。転送すべきものがあったかどうかを返す。
+	 *
+	 * 明示的な差し替えは仕切り直しなので、自己破棄のカウントも解除する。
+	 * 自動再発行（`reissueUnresolved`）はカウントを残すため、こちらを経由しない。
+	 */
 	const startUploadFor = useCallback(
-		(video: Video, kind: UploadKind): void => {
+		(video: Video, kind: UploadKind): boolean => {
 			const source = readUploadSource(video, kind);
-			if (source === undefined) return;
+			if (source === undefined) return false;
+			selfDiscardsRef.current.delete(slotKey(video.tempId, kind));
 			startUpload(video.tempId, kind, source);
+			return true;
 		},
 		[startUpload],
 	);
@@ -582,6 +649,7 @@ export function useMultiVideoCore(
 			if (rec?.status === "pending") rec.controller.abort();
 			writeRecords((draft) => draft.delete(key));
 			writeProgress(key, undefined);
+			selfDiscardsRef.current.delete(key);
 		},
 		[writeProgress, writeRecords],
 	);
@@ -906,7 +974,12 @@ export function useMultiVideoCore(
 	/** 未転送のスロットへ転送を発行する */
 	const reissueUnresolved = useCallback(() => {
 		for (const { video, kind, source } of listUnresolvedSlots()) {
-			const rec = recordsRef.current.get(slotKey(video.tempId, kind));
+			const key = slotKey(video.tempId, kind);
+			// tripwire が落ちたスロットは自動再発行しない。retry かファイル差し替えで解除する
+			if ((selfDiscardsRef.current.get(key) ?? 0) >= SELF_DISCARD_LIMIT) {
+				continue;
+			}
+			const rec = recordsRef.current.get(key);
 			// 走行中ならトークンが違っても発行しない。1 転送スロットに生きた転送は
 			// 1 本という制約を保つため。走行中の転送が対象を失っていれば、settle 時に
 			// 台帳から落ち、次の照合で現在のトークンに対して発行される
@@ -1054,15 +1127,61 @@ export function useMultiVideoCore(
 				// 参照同一性比較では区別できず両方が書き戻しに成功する
 				const rec = recordsRef.current.get(slotKey(tempId, kind));
 				if (rec?.status !== "failed") continue;
-				const source = readUploadSource(video, kind);
-				if (source === undefined) continue;
-				startUpload(tempId, kind, source);
-				restarted = true;
+				if (startUploadFor(video, kind)) restarted = true;
 			}
 			return restarted;
 		},
-		[startUpload],
+		[startUploadFor],
 	);
+
+	// フォーム state から消えた項目の台帳を落とす。handlers を介さない差し替え
+	// （form.reset や adapter への直接書き込み）で項目が消えると、その項目の failed が
+	// uploads.failed に残り続け、消費側は items で引けず retry でも消せない状態になる。
+	//
+	// 「一度フォーム state で見た tempId」だけを対象にする。単に「今の配列に無い」で
+	// 判定すると、追加直後の転送を反映待ちの間に中断してしまう
+	const seenTempIdsRef = useRef(new Set<string>());
+	const pruneOrphans = useCallback(() => {
+		const alive = new Set(
+			adapterRef.current.getVideos().map((vid) => vid.tempId),
+		);
+		const seen = seenTempIdsRef.current;
+		for (const tempId of alive) seen.add(tempId);
+
+		const orphanKeys: string[] = [];
+		for (const [key, rec] of recordsRef.current) {
+			if (alive.has(rec.tempId) || !seen.has(rec.tempId)) continue;
+			if (rec.status === "pending") rec.controller.abort();
+			orphanKeys.push(key);
+		}
+		for (const tempId of seen) {
+			if (!alive.has(tempId)) seen.delete(tempId);
+		}
+
+		if (orphanKeys.length === 0) return;
+		writeRecords((draft) => {
+			for (const key of orphanKeys) {
+				draft.delete(key);
+				selfDiscardsRef.current.delete(key);
+			}
+			return true;
+		});
+		for (const key of orphanKeys) writeProgress(key, undefined);
+	}, [writeProgress, writeRecords]);
+
+	// 転送参照を持たないスロットが現れたら転送を発行する。unmount で in-flight と
+	// 台帳は失われるがフォーム state には項目が残るため、remount や初期値の後差し込みでも
+	// 「転送されないまま uploads.wait が ok を返す」状態にならない。
+	//
+	// records も依存に含める。中断された転送は settle 時に台帳から落ちるため、
+	// これが無いと StrictMode の cleanup で中断された転送が開発時だけ再開されない。
+	// hasUploadFile も含める。undefined の間に追加された項目は startUpload が即 return
+	// するため、後から uploadFile が渡されたときに拾い直す必要がある
+	// biome-ignore lint/correctness/useExhaustiveDependencies: pruneOrphans / reissueUnresolved は adapterRef / recordsRef 経由で読むため依存に現れないが、発火させたいのは動画と台帳と uploadFile の有無が変わったとき
+	useEffect(() => {
+		pruneOrphans();
+		reissueUnresolved();
+	}, [adapter.videos, records, hasUploadFile, pruneOrphans, reissueUnresolved]);
 
 	// unmount 時のみ中断する。結果は破棄される。
 	//

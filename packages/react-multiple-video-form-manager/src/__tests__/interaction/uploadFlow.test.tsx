@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
@@ -188,6 +189,40 @@ describe.each(harnesses)("Upload Flow (%s)", (_label, Harness) => {
 		await expect
 			.element(page.getByTestId("uploads-pending"))
 			.toHaveTextContent("0");
+	});
+
+	it("StrictMode でも生きた転送は 1 スロットに 1 本", async () => {
+		const { uploadFile, calls } = createUploadSpy();
+
+		await render(
+			<StrictMode>
+				<Harness uploadFile={uploadFile} />
+			</StrictMode>,
+		);
+
+		await userEvent.upload(
+			page.getByTestId("add-input").element(),
+			makeFile("video.mp4"),
+		);
+		await expect
+			.element(page.getByTestId("upload-state-0"))
+			.toHaveTextContent("video:pending");
+
+		await userEvent.upload(
+			page.getByTestId("thumbnail-input-0").element(),
+			makeFile("thumb.jpg", "image/jpeg"),
+		);
+		await expect
+			.element(page.getByTestId("upload-state-0"))
+			.toHaveTextContent("video:pending,thumbnail:pending");
+
+		// 二重 mount で中断された転送は台帳から落ちて再発行されるが、
+		// 生きているのはスロットごとに 1 本
+		const alive = calls.filter((call) => !call.ctx.signal.aborted);
+		expect(alive.filter((call) => call.ctx.kind === "video")).toHaveLength(1);
+		expect(alive.filter((call) => call.ctx.kind === "thumbnail")).toHaveLength(
+			1,
+		);
 	});
 
 	it("processFile 成功 → 加工後のファイルで動画が追加される", async () => {
