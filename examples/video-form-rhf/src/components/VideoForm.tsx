@@ -7,7 +7,7 @@ import {
 import { useMultiVideoController } from "@curry-battle/react-multiple-video-form-manager/react-hook-form";
 import { standardSchemaResolver } from "@hookform/resolvers/standard-schema";
 import type { ChangeEvent } from "react";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { API } from "../api/api";
 import {
@@ -35,9 +35,13 @@ export function VideoForm({ initialVideos }: VideoFormProps) {
 	const [isUploading, setIsUploading] = useState(false);
 	const [operationError, setOperationError] = useState<string | null>(null);
 
+	// 連続してエラーが出たとき、先のタイマーが後のメッセージを早く消さないよう
+	// 張り替える
+	const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const showError = useCallback((message: string) => {
 		setOperationError(message);
-		setTimeout(() => setOperationError(null), 5000);
+		if (errorTimerRef.current !== null) clearTimeout(errorTimerRef.current);
+		errorTimerRef.current = setTimeout(() => setOperationError(null), 5000);
 	}, []);
 
 	const handleError = useCallback(

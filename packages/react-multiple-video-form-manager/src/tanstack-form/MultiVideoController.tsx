@@ -22,8 +22,9 @@ export type MultiVideoControllerProps<
 /**
  * `useMultiVideoController` の糖衣。
  *
- * submit ハンドラから `prepareForSubmit` を使う場合はフックを直接呼ぶこと。
- * このコンポーネントは render の内側にしか渡さないので ref での橋渡しが要る。
+ * submit ハンドラから `uploads` を使う場合はフックを直接呼ぶこと。このコンポーネントは
+ * render の内側にしか渡さないので ref での橋渡しが要る。送信素材の型も
+ * `uploadFile` の有無で確定しない（`MultiVideoRenderProps` の doc を参照）。
  */
 export function MultiVideoController<
 	TFieldName extends string,

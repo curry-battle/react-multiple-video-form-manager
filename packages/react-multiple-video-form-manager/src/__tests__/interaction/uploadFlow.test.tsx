@@ -7,7 +7,7 @@ import type {
 	UploadFileFn,
 	UploadFileResult,
 } from "../../core/types/Upload";
-import { harnesses, makeFile } from "./TestHarness";
+import { harnesses, makeFile, makeNew } from "./TestHarness";
 
 /** 転送の解決タイミングをテスト側で握るための uploadFile */
 function createUploadSpy() {
@@ -186,6 +186,36 @@ describe.each(harnesses)("Upload Flow (%s)", (_label, Harness) => {
 		await expect
 			.element(page.getByTestId("upload-ref-0"))
 			.toHaveTextContent("https://s3.example.com/v.mp4");
+		await expect
+			.element(page.getByTestId("uploads-pending"))
+			.toHaveTextContent("0");
+	});
+
+	it("StrictMode の二重 mount でも初期値の転送は 1 本に収まる", async () => {
+		const { uploadFile, calls } = createUploadSpy();
+
+		// 二重 mount の最中に self-heal が発行するので、中断と再発行がこの窓で起きる
+		await render(
+			<StrictMode>
+				<Harness
+					uploadFile={uploadFile}
+					initialVideos={[makeNew("temp_strict")]}
+				/>
+			</StrictMode>,
+		);
+
+		await expect
+			.element(page.getByTestId("upload-state-0"))
+			.toHaveTextContent("video:pending");
+
+		const alive = calls.filter((call) => !call.ctx.signal.aborted);
+		expect(alive).toHaveLength(1);
+
+		alive[0].resolve({ uploadRef: "https://s3.example.com/strict.mp4" });
+
+		await expect
+			.element(page.getByTestId("upload-ref-0"))
+			.toHaveTextContent("https://s3.example.com/strict.mp4");
 		await expect
 			.element(page.getByTestId("uploads-pending"))
 			.toHaveTextContent("0");

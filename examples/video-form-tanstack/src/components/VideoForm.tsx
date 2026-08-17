@@ -33,9 +33,13 @@ const uploadFile: UploadFileFn = async (file, ctx) => {
 export function VideoForm({ initialVideos }: VideoFormProps) {
 	const [operationError, setOperationError] = useState<string | null>(null);
 
+	// 連続してエラーが出たとき、先のタイマーが後のメッセージを早く消さないよう
+	// 張り替える
+	const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const showError = useCallback((message: string) => {
 		setOperationError(message);
-		setTimeout(() => setOperationError(null), 5000);
+		if (errorTimerRef.current !== null) clearTimeout(errorTimerRef.current);
+		errorTimerRef.current = setTimeout(() => setOperationError(null), 5000);
 	}, []);
 
 	const handleError = useCallback(

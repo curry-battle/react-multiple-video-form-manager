@@ -605,6 +605,84 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			expect(result.current.raw.videos[0].tempId).toBe("temp_B");
 		});
 
+		it("[stale] 加工が先に終わっても、後から発行した差し替えが残る", async () => {
+			const dSlow = createDeferred<File>();
+			const dFast = createDeferred<File>();
+			let call = 0;
+			// 先に発行した操作の加工が後に終わる（重いファイルの圧縮を模す）
+			const processFile = vi.fn(async (f: File) => {
+				const deferred = [dSlow, dFast][call++];
+				const processed = await deferred.promise;
+				return new File([processed], f.name, { type: f.type });
+			});
+
+			const nv = makeNewVideo({ tempId: "temp_target" });
+			const { result } = await renderCore([nv], { processFile });
+
+			const fileSlow = videoFile("slow.mp4");
+			const fileFast = videoFile("fast.mp4");
+
+			await act(async () => {
+				const p1 = result.current.handlers.changeFile("temp_target", fileSlow);
+				const p2 = result.current.handlers.changeFile("temp_target", fileFast);
+				dFast.resolve(fileFast);
+				dSlow.resolve(fileSlow);
+				await Promise.all([p1, p2]);
+			});
+
+			expect(firstVideo(result).file.name).toBe("fast.mp4");
+		});
+
+		it("[stale] 本体の加工中にサムネイルを設定しても本体の差し替えは捨てられない", async () => {
+			const dVideo = createDeferred<File>();
+			const processFile = vi.fn(async (_f: File) => dVideo.promise);
+
+			const nv = makeNewVideo({ tempId: "temp_target" });
+			const { result } = await renderCore([nv], { processFile });
+
+			const newFile = videoFile("changed.mp4");
+
+			await act(async () => {
+				const changing = result.current.handlers.changeFile(
+					"temp_target",
+					newFile,
+				);
+				// 本体の加工中にサムネイルを設定する（世代を共有していると本体が捨てられる）
+				await result.current.handlers.setThumbnailFromFile(
+					"temp_target",
+					thumbFile(),
+				);
+				dVideo.resolve(newFile);
+				await changing;
+			});
+
+			const video = firstVideo(result);
+			expect(video.file.name).toBe("changed.mp4");
+			expect(video.thumbnail?.source).toBe(ThumbnailSource.Upload);
+		});
+
+		it("[stale] サムネイル削除は加工中の設定操作に勝つ", async () => {
+			const dThumb = createDeferred<File>();
+			const processThumbnailFile = vi.fn(async (_f: File) => dThumb.promise);
+
+			const nv = makeNewVideo({ tempId: "temp_target" });
+			const { result } = await renderCore([nv], { processThumbnailFile });
+
+			const thumb = thumbFile();
+
+			await act(async () => {
+				const setting = result.current.handlers.setThumbnailFromFile(
+					"temp_target",
+					thumb,
+				);
+				await result.current.handlers.removeThumbnail("temp_target");
+				dThumb.resolve(thumb);
+				await setting;
+			});
+
+			expect(firstVideo(result).thumbnail).toBeNull();
+		});
+
 		it("[stale] 同一 tempId への連続 setThumbnailFromFile は後発が勝つ", async () => {
 			const dSlow = createDeferred<File>();
 			const dFast = createDeferred<File>();
@@ -1060,6 +1138,77 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			});
 		});
 
+		it("後発の転送へ引き継いだ進捗は、先行の転送の settle で消えない", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile("1.mp4"));
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				calls[0].ctx.onProgress(0.4);
+			});
+
+			// 同じスロットへ再発行すると先行の転送は中断される
+			await act(async () => {
+				await result.current.handlers.changeFile(tempId, videoFile("2.mp4"));
+			});
+			await act(async () => {
+				calls[1].ctx.onProgress(0.7);
+			});
+			expect(result.current.items[0].uploadState.video).toEqual({
+				status: "pending",
+				progress: 0.7,
+			});
+
+			// 中断された先行の転送が遅れて settle しても、後発の進捗は巻き戻らない
+			await act(async () => {
+				calls[0].resolve({ uploadRef: "ref-stale" });
+			});
+
+			expect(result.current.items[0].uploadState.video).toEqual({
+				status: "pending",
+				progress: 0.7,
+			});
+		});
+
+		it("サムネイルスロットでも進捗の引き継ぎが成立する", async () => {
+			const { uploadFile, callsOf } = createUploadSpy();
+			const nv = makeNewVideo({ tempId: "temp_n", uploadRef: "ref-video" });
+			const { result } = await renderCore([nv], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(
+					"temp_n",
+					thumbFile("1.jpg"),
+				);
+			});
+			await act(async () => {
+				callsOf("thumbnail")[0].ctx.onProgress(0.3);
+			});
+
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(
+					"temp_n",
+					thumbFile("2.jpg"),
+				);
+			});
+			await act(async () => {
+				callsOf("thumbnail")[1].ctx.onProgress(0.9);
+			});
+
+			await act(async () => {
+				callsOf("thumbnail")[0].resolve({ uploadRef: "ref-stale-thumb" });
+			});
+
+			expect(result.current.items[0].uploadState.thumbnail).toEqual({
+				status: "pending",
+				progress: 0.9,
+			});
+			expect(firstVideo(result).thumbnail?.uploadRef).toBeUndefined();
+		});
+
 		it("本体とサムネイルの進捗は別々に出る", async () => {
 			const { uploadFile, callsOf } = createUploadSpy();
 			const { result } = await renderCore([], { uploadFile });
@@ -1086,11 +1235,13 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 	describe("self-heal と孤児回収", () => {
 		it("転送参照を持たない初期値の項目に転送を発行する", async () => {
 			const uploadFile = vi.fn(async () => ({ uploadRef: "ref-healed" }));
+			// handlers を通っていない項目。unmount で台帳が失われてもフォーム state には
+			// 項目が残るため、remount 後に「転送されないまま」にならないことを表す
 			const nv = makeNewVideo({ tempId: "temp_initial" });
+			expect(nv.uploadRef).toBeUndefined();
+
 			const { result } = await renderCore([nv], { uploadFile });
 
-			// mount 時点で発行される。unmount で台帳が失われてもフォーム state には
-			// 項目が残るため、remount 後に「転送されないまま」にならない
 			await vi.waitFor(() => {
 				expect(firstVideo(result).uploadRef).toBe("ref-healed");
 			});
@@ -1538,20 +1689,67 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			]);
 		});
 
-		it("未着手のスロットは wait が転送を発行して待つ", async () => {
-			const uploadFile = vi.fn(async () => ({ uploadRef: "ref-reissued" }));
-			// 転送ハンドラを設定しても、初期値の項目には転送が走っていない
-			const nv = makeNewVideo({ tempId: "temp_initial" });
-			const { result } = await renderCore([nv], { uploadFile });
+		it("待機中に現れた未解決スロットも待ち対象に入る", async () => {
+			const { uploadFile, callsOf } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			const tempId = result.current.raw.videos[0].tempId;
 
 			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
 			await act(async () => {
-				waited = await result.current.uploads.wait();
+				const waiting = result.current.uploads.wait();
+				// 本体の転送が解決した周回で、サムネイルという新しい未解決スロットが増える。
+				// 待機開始時点のスナップショットだけを待つ実装では取りこぼす
+				callsOf("video")[0].resolve({ uploadRef: "ref-video" });
+				await result.current.handlers.setThumbnailFromFile(tempId, thumbFile());
+				callsOf("thumbnail")[0].resolve({ uploadRef: "ref-thumb" });
+				waited = await waiting;
 			});
 
-			expect(uploadFile).toHaveBeenCalledOnce();
 			expect(waited!.ok).toBe(true);
-			expect(firstVideo(result).uploadRef).toBe("ref-reissued");
+			if (!waited!.ok) return;
+			expect(waited!.videos[0]).toEqual({
+				status: VideoFormStatus.New,
+				uploadRef: "ref-video",
+				thumbnail: { status: "new", uploadRef: "ref-thumb" },
+			});
+		});
+
+		it("待機中の retry で復帰したスロットも待って ok を返す", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile("a.mp4"));
+			});
+			await act(async () => {
+				await result.current.handlers.add(videoFile("b.mp4"));
+			});
+			const failedTempId = result.current.raw.videos[1].tempId;
+			await act(async () => {
+				calls[1].reject(new Error("boom"));
+			});
+			expect(result.current.uploads.failed).toEqual([failedTempId]);
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				// 1 件目の転送が走っているので wait はそこで待つ
+				const waiting = result.current.uploads.wait();
+				// 失敗済みは wait が自動再送しないため、消費側の retry で復帰させる
+				result.current.uploads.retry(failedTempId);
+				calls[0].resolve({ uploadRef: "ref-a" });
+				calls[2].resolve({ uploadRef: "ref-b" });
+				waited = await waiting;
+			});
+
+			expect(waited!.ok).toBe(true);
+			if (!waited!.ok) return;
+			expect(
+				waited!.videos.map((v) => ("uploadRef" in v ? v.uploadRef : null)),
+			).toEqual(["ref-a", "ref-b"]);
 		});
 
 		it("本体が完了しサムネイルが走行中なら両方を待つ", async () => {
@@ -1827,6 +2025,26 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				{ status: VideoFormStatus.Existing, id: "id-ex", thumbnail: null },
 			]);
 			expect(ready.deletedIds).toEqual([]);
+		});
+
+		it("失敗したスロットを持つ項目も除外される", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				calls[0].reject(new Error("boom"));
+			});
+			expect(result.current.uploads.failed).toEqual([tempId]);
+
+			// 失敗済みは自動再試行しないので、retry を呼ぶまで除外され続ける
+			const ready = result.current.uploads.getReady();
+
+			expect(ready.excludedTempIds).toEqual([tempId]);
+			expect(ready.videos).toEqual([]);
 		});
 
 		it("uploadFile 未設定なら新規項目を除外しない", async () => {

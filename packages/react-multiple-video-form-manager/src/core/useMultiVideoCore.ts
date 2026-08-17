@@ -306,6 +306,33 @@ export function useMultiVideoCore(
 
 	const selfDiscardsRef = useRef(new Map<string, number>());
 
+	/**
+	 * 操作の世代。ファイル加工やフレームキャプチャの await から戻ったとき、同じ
+	 * スロットへ後続の操作が発行されていたら書き込みを捨てる。加工の所要時間は
+	 * ファイルによって違うため、これが無いと「先に選んだ重いファイル」が
+	 * 「後に選んだ軽いファイル」を上書きする。
+	 *
+	 * 転送スロットごとに分けるのが要点。1 つのカウンタを本体とサムネイルで共有すると、
+	 * 本体の加工中にサムネイルを設定しただけで本体の差し替えが黙って捨てられる。
+	 */
+	const generationsRef = useRef(new Map<string, number>());
+
+	const bumpGeneration = useCallback(
+		(tempId: string, kind: UploadKind): number => {
+			const key = slotKey(tempId, kind);
+			const generation = (generationsRef.current.get(key) ?? 0) + 1;
+			generationsRef.current.set(key, generation);
+			return generation;
+		},
+		[],
+	);
+
+	const isGenerationStale = useCallback(
+		(tempId: string, kind: UploadKind, generation: number): boolean =>
+			generationsRef.current.get(slotKey(tempId, kind)) !== generation,
+		[],
+	);
+
 	const writeProgress = useCallback(
 		(key: string, fraction: number | undefined) => {
 			const draft = new Map(progressRef.current);
@@ -699,6 +726,7 @@ export function useMultiVideoCore(
 		async (tempId: string, file: File): Promise<boolean> => {
 			if (findIndexByTempId(tempId) === undefined) return false;
 
+			const generation = bumpGeneration(tempId, UploadKind.Video);
 			addPending(tempId);
 			try {
 				const processedFile = await executeProcess(
@@ -708,6 +736,9 @@ export function useMultiVideoCore(
 					msgRef.current.processFile,
 				);
 				if (!processedFile) return false;
+				if (isGenerationStale(tempId, UploadKind.Video, generation)) {
+					return false;
+				}
 
 				// await 中に並行操作で削除・移動されている可能性があるため、
 				// 対象は tempId から再解決する（ops.changeFile が行う）
@@ -732,9 +763,11 @@ export function useMultiVideoCore(
 		[
 			addPending,
 			appendDeletedId,
+			bumpGeneration,
 			discardSlot,
 			executeProcess,
 			findIndexByTempId,
+			isGenerationStale,
 			processFile,
 			removePending,
 			safeValidate,
@@ -815,9 +848,26 @@ export function useMultiVideoCore(
 		): Promise<boolean> => {
 			if (findIndexByTempId(tempId) === undefined) return false;
 
+			const generation = bumpGeneration(tempId, UploadKind.Thumbnail);
 			addPending(tempId);
 			try {
-				const captured = await ThumbnailUtils.captureFrame(videoElement);
+				// catch はキャプチャだけに掛ける。以降の失敗まで拾うと、無関係な
+				// 例外がフレームキャプチャの失敗として消費側に伝わる
+				let captured: Thumbnail;
+				try {
+					captured = await ThumbnailUtils.captureFrame(videoElement);
+				} catch (err) {
+					onErrorRef.current?.({
+						type: "unknown",
+						message: msgRef.current.frameCapture(),
+						cause: err,
+					});
+					return false;
+				}
+				if (isGenerationStale(tempId, UploadKind.Thumbnail, generation)) {
+					return false;
+				}
+
 				const updated = updateThumbnail(tempId, captured);
 				if (updated === null) return false;
 
@@ -825,20 +875,15 @@ export function useMultiVideoCore(
 
 				await safeValidate();
 				return true;
-			} catch (err) {
-				onErrorRef.current?.({
-					type: "unknown",
-					message: msgRef.current.frameCapture(),
-					cause: err,
-				});
-				return false;
 			} finally {
 				removePending(tempId);
 			}
 		},
 		[
 			addPending,
+			bumpGeneration,
 			findIndexByTempId,
+			isGenerationStale,
 			removePending,
 			safeValidate,
 			startUploadFor,
@@ -850,6 +895,7 @@ export function useMultiVideoCore(
 		async (tempId: string, file: File): Promise<boolean> => {
 			if (findIndexByTempId(tempId) === undefined) return false;
 
+			const generation = bumpGeneration(tempId, UploadKind.Thumbnail);
 			addPending(tempId);
 			try {
 				const processedFile = await executeProcess(
@@ -859,6 +905,9 @@ export function useMultiVideoCore(
 					msgRef.current.processThumbnailFile,
 				);
 				if (!processedFile) return false;
+				if (isGenerationStale(tempId, UploadKind.Thumbnail, generation)) {
+					return false;
+				}
 
 				const updated = updateThumbnail(
 					tempId,
@@ -876,8 +925,10 @@ export function useMultiVideoCore(
 		},
 		[
 			addPending,
+			bumpGeneration,
 			executeProcess,
 			findIndexByTempId,
+			isGenerationStale,
 			processThumbnailFile,
 			removePending,
 			safeValidate,
@@ -888,12 +939,15 @@ export function useMultiVideoCore(
 
 	const handleRemoveThumbnail = useCallback(
 		async (tempId: string): Promise<boolean> => {
+			// 加工中の設定操作より後の操作なので、世代を進めてそちらを捨てる。
+			// 進めないと、削除したサムネイルが加工の完了後に戻ってくる
+			bumpGeneration(tempId, UploadKind.Thumbnail);
 			if (updateThumbnail(tempId, null) === null) return false;
 			discardSlot(tempId, UploadKind.Thumbnail);
 			await safeValidate();
 			return true;
 		},
-		[discardSlot, safeValidate, updateThumbnail],
+		[bumpGeneration, discardSlot, safeValidate, updateThumbnail],
 	);
 
 	const handlers = useMemo<UseMultiVideoCoreHandlers>(
