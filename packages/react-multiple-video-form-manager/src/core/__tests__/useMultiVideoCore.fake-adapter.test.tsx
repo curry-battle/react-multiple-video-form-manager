@@ -33,7 +33,7 @@ const makeNewVideo = (overrides?: Partial<VideoNew>): VideoNew => ({
 	status: VideoFormStatus.New,
 	id: undefined,
 	file: new File(["data"], "test.mp4", { type: "video/mp4" }),
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 	thumbnail: null,
 	...overrides,
 });
@@ -111,7 +111,7 @@ async function renderCore(
 		uploadFile?: UploadFileFn;
 		uploadThumbnailFile?: UploadFileFn;
 		onError?: (error: unknown) => void;
-		onOrphanedUpload?: (uploadedUrl: string) => void;
+		onOrphanedUpload?: (uploadRef: string) => void;
 		messages?: CoreMessages;
 	} = {},
 ) {
@@ -646,7 +646,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				async (_f: File) => [dSlow, dFast][processCall++].promise,
 			);
 			const uploadFile = vi.fn(async () => ({
-				uploadedUrl: "https://example.com/v.mp4",
+				uploadRef: "https://example.com/v.mp4",
 			}));
 			const onError = vi.fn();
 
@@ -716,9 +716,9 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 	});
 
 	describe("uploadFile", () => {
-		it("uploadFile 成功時に VideoNew.uploadedUrl が設定されること", async () => {
+		it("uploadFile 成功時に VideoNew.uploadRef が設定されること", async () => {
 			const uploadFile = vi.fn(async () => ({
-				uploadedUrl: "https://s3.example.com/uploaded.mp4",
+				uploadRef: "https://s3.example.com/uploaded.mp4",
 			}));
 			const { result } = await renderCore([], { uploadFile });
 			await act(async () => {
@@ -727,10 +727,10 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				);
 			});
 			const video = result.current.raw.videos[0] as VideoNew;
-			expect(video.uploadedUrl).toBe("https://s3.example.com/uploaded.mp4");
+			expect(video.uploadRef).toBe("https://s3.example.com/uploaded.mp4");
 		});
 
-		it("uploadFile 未指定時は uploadedUrl が設定されないこと", async () => {
+		it("uploadFile 未指定時は uploadRef が設定されないこと", async () => {
 			const { result } = await renderCore([]);
 			await act(async () => {
 				await result.current.handlers.add(
@@ -738,7 +738,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				);
 			});
 			const video = result.current.raw.videos[0] as VideoNew;
-			expect(video.uploadedUrl).toBeUndefined();
+			expect(video.uploadRef).toBeUndefined();
 		});
 
 		it("uploadFile 失敗時は onError(upload_file) + false を返し動画は追加されないこと", async () => {
@@ -768,7 +768,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			});
 			const uploadFile = vi.fn(async () => {
 				callOrder.push("upload");
-				return { uploadedUrl: "https://example.com/v.mp4" };
+				return { uploadRef: "https://example.com/v.mp4" };
 			});
 			const { result } = await renderCore([], { processFile, uploadFile });
 			await act(async () => {
@@ -781,7 +781,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("handleFileChange でも uploadFile が実行されること", async () => {
 			const uploadFile = vi.fn(async () => ({
-				uploadedUrl: "https://s3.example.com/changed.mp4",
+				uploadRef: "https://s3.example.com/changed.mp4",
 			}));
 			const nv = makeNewVideo({ tempId: "temp_n" });
 			const { result } = await renderCore([nv], { uploadFile });
@@ -792,7 +792,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				);
 			});
 			const video = result.current.raw.videos[0] as VideoNew;
-			expect(video.uploadedUrl).toBe("https://s3.example.com/changed.mp4");
+			expect(video.uploadRef).toBe("https://s3.example.com/changed.mp4");
 			expect(uploadFile).toHaveBeenCalled();
 		});
 
@@ -821,9 +821,9 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 	});
 
 	describe("uploadThumbnailFile", () => {
-		it("handleSetThumbnailFromFile で uploadThumbnailFile が実行され uploadedUrl が設定されること", async () => {
+		it("handleSetThumbnailFromFile で uploadThumbnailFile が実行され uploadRef が設定されること", async () => {
 			const uploadThumbnailFile = vi.fn(async () => ({
-				uploadedUrl: "https://s3.example.com/thumb.jpg",
+				uploadRef: "https://s3.example.com/thumb.jpg",
 			}));
 			const nv = makeNewVideo({ tempId: "temp_t1" });
 			const { result } = await renderCore([nv], { uploadThumbnailFile });
@@ -837,13 +837,13 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			expect(video.thumbnail).not.toBeNull();
 			expect(video.thumbnail!.source).toBe(ThumbnailSource.Upload);
 			if (video.thumbnail!.source === ThumbnailSource.Upload) {
-				expect(video.thumbnail!.uploadedUrl).toBe(
+				expect(video.thumbnail!.uploadRef).toBe(
 					"https://s3.example.com/thumb.jpg",
 				);
 			}
 		});
 
-		it("uploadThumbnailFile 未指定時は uploadedUrl なしでサムネイル設定されること", async () => {
+		it("uploadThumbnailFile 未指定時は uploadRef なしでサムネイル設定されること", async () => {
 			const nv = makeNewVideo({ tempId: "temp_t2" });
 			const { result } = await renderCore([nv]);
 			await act(async () => {
@@ -855,7 +855,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const video = result.current.raw.videos[0] as VideoNew;
 			expect(video.thumbnail).not.toBeNull();
 			if (video.thumbnail!.source === ThumbnailSource.Upload) {
-				expect(video.thumbnail!.uploadedUrl).toBeUndefined();
+				expect(video.thumbnail!.uploadRef).toBeUndefined();
 			}
 		});
 
@@ -903,7 +903,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 	describe("epoch — orphan cleanup (handleFileChange / handleSetThumbnail)", () => {
 		it("handleFileChange: upload await 中に epoch が stale → orphan 通知される", async () => {
 			const dProcess = createDeferred<File>();
-			const dUpload = createDeferred<{ uploadedUrl: string }>();
+			const dUpload = createDeferred<{ uploadRef: string }>();
 			const processFile = vi.fn(async (_f: File) => dProcess.promise);
 			const uploadFile = vi.fn(async () => dUpload.promise);
 			const onOrphanedUpload = vi.fn();
@@ -929,7 +929,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				await result.current.handlers.delete("temp_target");
 
 				dUpload.resolve({
-					uploadedUrl: "https://s3.example.com/orphan.mp4",
+					uploadRef: "https://s3.example.com/orphan.mp4",
 				});
 				await changing;
 			});
@@ -939,12 +939,12 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			);
 		});
 
-		it("handleFileChange: changeFile が changed:false → uploadedUrl が orphan 通知される", async () => {
+		it("handleFileChange: changeFile が changed:false → uploadRef が orphan 通知される", async () => {
 			// adapter.setVideos で直接除去すると epoch は stale にならない（bumpEpoch を経由しない）ため
 			// ops.changeFile が changed:false を返すパスに到達する
 			const dProcess = createDeferred<File>();
 			const uploadFile = vi.fn(async () => ({
-				uploadedUrl: "https://s3.example.com/orphan2.mp4",
+				uploadRef: "https://s3.example.com/orphan2.mp4",
 			}));
 			const onOrphanedUpload = vi.fn();
 
@@ -976,7 +976,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		});
 
 		it("handleSetThumbnailFromFrame: upload await 中に epoch が stale → orphan 通知される", async () => {
-			const dUpload = createDeferred<{ uploadedUrl: string }>();
+			const dUpload = createDeferred<{ uploadRef: string }>();
 			const uploadThumbnailFile = vi.fn(async () => dUpload.promise);
 			const onOrphanedUpload = vi.fn();
 
@@ -1006,7 +1006,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 					await result.current.handlers.delete("temp_target");
 
 					dUpload.resolve({
-						uploadedUrl: "https://s3.example.com/orphan-thumb.jpg",
+						uploadRef: "https://s3.example.com/orphan-thumb.jpg",
 					});
 					await setting;
 				});
@@ -1019,9 +1019,9 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			}
 		});
 
-		it("handleSetThumbnailFromFrame: updateThumbnail 失敗 → uploadedUrl が orphan 通知される", async () => {
+		it("handleSetThumbnailFromFrame: updateThumbnail 失敗 → uploadRef が orphan 通知される", async () => {
 			const uploadThumbnailFile = vi.fn(async () => ({
-				uploadedUrl: "https://s3.example.com/orphan-thumb2.jpg",
+				uploadRef: "https://s3.example.com/orphan-thumb2.jpg",
 			}));
 			const onOrphanedUpload = vi.fn();
 
@@ -1067,7 +1067,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("handleSetThumbnailFromFile: upload await 中に epoch が stale → orphan 通知される", async () => {
 			const dProcess = createDeferred<File>();
-			const dUpload = createDeferred<{ uploadedUrl: string }>();
+			const dUpload = createDeferred<{ uploadRef: string }>();
 			const processThumbnailFile = vi.fn(async (_f: File) => dProcess.promise);
 			const uploadThumbnailFile = vi.fn(async () => dUpload.promise);
 			const onOrphanedUpload = vi.fn();
@@ -1094,7 +1094,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				await result.current.handlers.delete("temp_target");
 
 				dUpload.resolve({
-					uploadedUrl: "https://s3.example.com/orphan-thumb3.jpg",
+					uploadRef: "https://s3.example.com/orphan-thumb3.jpg",
 				});
 				await setting;
 			});
@@ -1104,9 +1104,9 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			);
 		});
 
-		it("handleSetThumbnailFromFile: updateThumbnail 失敗 → uploadedUrl が orphan 通知される", async () => {
+		it("handleSetThumbnailFromFile: updateThumbnail 失敗 → uploadRef が orphan 通知される", async () => {
 			const uploadThumbnailFile = vi.fn(async () => ({
-				uploadedUrl: "https://s3.example.com/orphan-thumb4.jpg",
+				uploadRef: "https://s3.example.com/orphan-thumb4.jpg",
 			}));
 			const onOrphanedUpload = vi.fn();
 
@@ -1175,7 +1175,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 	describe("tempId 不存在時の early return", () => {
 		it("handleFileChange: 存在しない tempId で false が返り副作用がない", async () => {
 			const uploadFile = vi.fn(async () => ({
-				uploadedUrl: "https://example.com/v.mp4",
+				uploadRef: "https://example.com/v.mp4",
 			}));
 			const nv = makeNewVideo({ tempId: "temp_n" });
 			const { result } = await renderCore([nv], { uploadFile });
@@ -1217,13 +1217,13 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 	});
 
 	describe("onOrphanedUpload", () => {
-		it("handleAdd: 同時 add で maxVideos 競合 → 後発の uploadedUrl が orphan 通知される", async () => {
+		it("handleAdd: 同時 add で maxVideos 競合 → 後発の uploadRef が orphan 通知される", async () => {
 			const d1 = createDeferred<File>();
 			const d2 = createDeferred<File>();
 			let call = 0;
 			const processFile = vi.fn(async (_f: File) => [d1, d2][call++].promise);
 			const uploadFile = vi.fn(async () => ({
-				uploadedUrl: "https://s3.example.com/orphan.mp4",
+				uploadRef: "https://s3.example.com/orphan.mp4",
 			}));
 			const onOrphanedUpload = vi.fn();
 
@@ -1257,7 +1257,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			let call = 0;
 			const processFile = vi.fn(async (_f: File) => [d1, d2][call++].promise);
 			const uploadFile = vi.fn(async () => ({
-				uploadedUrl: "https://s3.example.com/orphan.mp4",
+				uploadRef: "https://s3.example.com/orphan.mp4",
 			}));
 
 			const { result } = await renderCore([], {
@@ -1466,7 +1466,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			let renderCount = 0;
 			const ref: { result?: ReturnType<typeof useMultiVideoCore> } = {};
 			const uploadFile = vi.fn(async () => ({
-				uploadedUrl: "https://example.com/v.mp4",
+				uploadRef: "https://example.com/v.mp4",
 			}));
 
 			type Props = {
@@ -1504,12 +1504,12 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("render prop の prepareForSubmit(options) が options を core に素通しすること", async () => {
 			const nv = makeNewVideo({
 				tempId: "temp_submit",
-				uploadedUrl: undefined,
+				uploadRef: undefined,
 			});
 			const { result } = await renderCore([nv]);
 
 			const uploadFile = vi.fn(async () => ({
-				uploadedUrl: "https://s3.example.com/on-submit.mp4",
+				uploadRef: "https://s3.example.com/on-submit.mp4",
 			}));
 
 			let resolved: Awaited<ReturnType<typeof result.current.prepareForSubmit>>;
@@ -1526,16 +1526,16 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("混在時: on-select 済み項目は prepareForSubmit(options) で二重アップロードされない", async () => {
 			const alreadyUploaded = makeNewVideo({
 				tempId: "temp_already",
-				uploadedUrl: "https://s3.example.com/already.mp4",
+				uploadRef: "https://s3.example.com/already.mp4",
 			});
 			const pending = makeNewVideo({
 				tempId: "temp_pending",
-				uploadedUrl: undefined,
+				uploadRef: undefined,
 			});
 			const { result } = await renderCore([alreadyUploaded, pending]);
 
 			const uploadFile = vi.fn(async () => ({
-				uploadedUrl: "https://s3.example.com/submitted.mp4",
+				uploadRef: "https://s3.example.com/submitted.mp4",
 			}));
 
 			let resolved: Awaited<ReturnType<typeof result.current.prepareForSubmit>>;

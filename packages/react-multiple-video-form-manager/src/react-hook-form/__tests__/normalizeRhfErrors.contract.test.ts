@@ -27,9 +27,25 @@ function makeVideo(tempId: string, file: File): Video {
 		status: "new",
 		id: undefined,
 		file,
-		uploadedUrl: undefined,
+		uploadRef: undefined,
 		thumbnail: null,
 	};
+}
+
+function makeExistingVideo(
+	tempId: string,
+	overrides?: Partial<Record<string, unknown>>,
+): Video {
+	return {
+		tempId,
+		status: "existing",
+		id: "vid-1",
+		file: undefined,
+		uploadedUrl: "https://s3.example.com/video.mp4",
+		thumbnail: null,
+		thumbnailRemoved: false,
+		...overrides,
+	} as Video;
 }
 
 async function resolveAndNormalize(videos: Video[]) {
@@ -71,6 +87,27 @@ describe("normalizeRhfErrors contract test", () => {
 		const r = await resolveAndNormalize(videos);
 
 		expect(r.root.length).toBeGreaterThan(0);
+	});
+
+	it("thumbnailRemoved のスキーマエラーが items[tempId].thumbnailRemoved に届く", async () => {
+		const videos = [makeExistingVideo("t1", { thumbnailRemoved: "yes" })];
+		const r = await resolveAndNormalize(videos);
+
+		expect(r.items.t1?.thumbnailRemoved?.message).toBeDefined();
+		expect(r.root).toHaveLength(0);
+	});
+
+	it("uploadRef のスキーマエラーが items[tempId].uploadRef に届く", async () => {
+		const videos = [
+			{
+				...makeVideo("t1", new File(["x"], "v.mp4", { type: "video/mp4" })),
+				uploadRef: 42,
+			} as unknown as Video,
+		];
+		const r = await resolveAndNormalize(videos);
+
+		expect(r.items.t1?.uploadRef?.message).toBeDefined();
+		expect(r.root).toHaveLength(0);
 	});
 
 	it("複数 item のうちエラーありのみ items に入り、正常な item は含まれない", async () => {

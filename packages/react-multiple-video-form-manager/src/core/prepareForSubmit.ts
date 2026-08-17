@@ -7,6 +7,8 @@ import { VideoFormStatus as VideoFormStatusValue } from "./types/VideoStatus";
 
 // --- Resolved types ---
 
+// 解決済み payload の `uploadedUrl` は、新規なら転送参照・既存ならサーバ由来の URL と
+// 供給源が分かれる。消費側はサーバへ渡すだけで URL 意味論に依存しないため 1 フィールドに畳む。
 export type ResolvedThumbnailForSubmit =
 	| {
 			status: typeof ThumbnailSubmitStatus.New;
@@ -30,8 +32,8 @@ export type ResolvedVideoForSubmit = {
 	thumbnail: ResolvedThumbnailForSubmit | null;
 };
 
-// prepareForSubmit は orphan (アップロード済みだが未使用になった URL) を
-// PrepareForSubmitError.successfulUploadUrls 経由でのみ通知する。
+// prepareForSubmit は orphan（アップロード済みだが未使用になった転送参照） を
+// PrepareForSubmitError.successfulUploadRefs 経由でのみ通知する。
 // UploadOnSelectOptions をそのまま渡すと onOrphanedUpload は黙って無視されるため、
 // never で禁止しコンパイルエラーとして早期検出する。
 export type PrepareForSubmitOptions = UploadHandlers & {
@@ -48,23 +50,30 @@ export type PrepareForSubmitResult = {
  *
  * When `uploadFile` / `uploadThumbnailFile` are provided in `options`,
  * pending files are uploaded inside this call before the result is returned.
- * Calling with no arguments assumes all items already carry `uploadedUrl`
- * (e.g. via upload-on-select); missing URLs reject with {@link PrepareForSubmitError}.
+ * Calling with no arguments assumes every new item already carries `uploadRef`
+ * (e.g. via upload-on-select); missing ones reject with {@link PrepareForSubmitError}.
  */
 export type PrepareForSubmitFn = (
 	options?: PrepareForSubmitOptions,
 ) => Promise<PrepareForSubmitResult>;
 
 export class PrepareForSubmitError extends Error {
-	readonly successfulUploadUrls: string[];
-	constructor(message: string, successfulUploadUrls: string[]) {
+	readonly successfulUploadRefs: string[];
+	constructor(message: string, successfulUploadRefs: string[]) {
 		super(message);
 		this.name = "PrepareForSubmitError";
-		this.successfulUploadUrls = successfulUploadUrls;
+		this.successfulUploadRefs = successfulUploadRefs;
 	}
 }
 
 // --- Implementation ---
+
+// 新規は転送参照、既存はサーバ由来の URL と供給源が分かれる（ResolvedThumbnailForSubmit と同じ理由で 1 本に畳む）
+function resolveVideoRef(video: Video): string | undefined {
+	return video.status === VideoFormStatusValue.New
+		? video.uploadRef
+		: video.uploadedUrl;
+}
 
 function extractThumbnailFile(thumbnail: Thumbnail): File {
 	if (thumbnail.source === ThumbnailSource.Frame) {
@@ -73,21 +82,21 @@ function extractThumbnailFile(thumbnail: Thumbnail): File {
 	return thumbnail.file;
 }
 
-type UploadResult = { tempId: string; uploadedUrl: string };
+type UploadResult = { tempId: string; uploadRef: string };
 
-// allSettled で全完了を待ち、成功 URL を漏れなく収集してから失敗があれば throw
+// allSettled で全完了を待ち、成功した転送参照を漏れなく収集してから失敗があれば throw
 async function settledUpload<T>(
 	items: T[],
 	fn: (item: T) => Promise<UploadResult>,
-): Promise<{ results: UploadResult[]; successfulUrls: string[] }> {
+): Promise<{ results: UploadResult[]; successfulRefs: string[] }> {
 	const settled = await Promise.allSettled(items.map(fn));
 	const results: UploadResult[] = [];
-	const successfulUrls: string[] = [];
+	const successfulRefs: string[] = [];
 	const errors: unknown[] = [];
 	for (const s of settled) {
 		if (s.status === "fulfilled") {
 			results.push(s.value);
-			successfulUrls.push(s.value.uploadedUrl);
+			successfulRefs.push(s.value.uploadRef);
 		} else {
 			errors.push(s.reason);
 		}
@@ -95,9 +104,9 @@ async function settledUpload<T>(
 	if (errors.length > 0) {
 		const msg =
 			errors[0] instanceof Error ? errors[0].message : String(errors[0]);
-		throw new PrepareForSubmitError(msg, successfulUrls);
+		throw new PrepareForSubmitError(msg, successfulRefs);
 	}
-	return { results, successfulUrls };
+	return { results, successfulRefs };
 }
 
 /**
@@ -105,11 +114,11 @@ async function settledUpload<T>(
  *
  * When `uploadFile` / `uploadThumbnailFile` are provided in `options`,
  * this method uploads all pending files internally before returning.
- * Items that already have an `uploadedUrl` (e.g. via upload-on-select)
+ * Items that already carry an upload reference (e.g. via upload-on-select)
  * are skipped, so mixing both strategies is safe.
  *
  * On failure the thrown {@link PrepareForSubmitError} carries
- * `successfulUploadUrls` for caller-side cleanup.
+ * `successfulUploadRefs` for caller-side cleanup.
  */
 export async function prepareForSubmit(
 	videos: readonly Video[],
@@ -124,15 +133,16 @@ export async function prepareForSubmit(
 		thumbnailForSubmit: VideoUtils.resolveThumbnailForSubmit(vid),
 	}));
 
-	const allSuccessfulUrls: string[] = [];
+	const allSuccessfulRefs: string[] = [];
 
 	try {
 		// --- 動画アップロード ---
 		const videoUploadMap = new Map<string, string>();
 
 		for (const vid of videosForSubmit) {
-			if (vid.uploadedUrl) {
-				videoUploadMap.set(vid.tempId, vid.uploadedUrl);
+			const ref = resolveVideoRef(vid);
+			if (ref) {
+				videoUploadMap.set(vid.tempId, ref);
 			}
 		}
 
@@ -142,16 +152,16 @@ export async function prepareForSubmit(
 					vid.status === VideoFormStatusValue.New &&
 					!videoUploadMap.has(vid.tempId),
 			);
-			const { results, successfulUrls } = await settledUpload(
+			const { results, successfulRefs } = await settledUpload(
 				toUpload,
 				async (vid) => {
 					const result = await uploadFile(vid.file);
-					return { tempId: vid.tempId, uploadedUrl: result.uploadedUrl };
+					return { tempId: vid.tempId, uploadRef: result.uploadRef };
 				},
 			);
-			allSuccessfulUrls.push(...successfulUrls);
+			allSuccessfulRefs.push(...successfulRefs);
 			for (const r of results) {
-				videoUploadMap.set(r.tempId, r.uploadedUrl);
+				videoUploadMap.set(r.tempId, r.uploadRef);
 			}
 		}
 
@@ -163,9 +173,9 @@ export async function prepareForSubmit(
 				t &&
 				(t.status === ThumbnailSubmitStatus.New ||
 					t.status === ThumbnailSubmitStatus.Replaced) &&
-				t.thumbnail.uploadedUrl
+				t.thumbnail.uploadRef
 			) {
-				thumbnailUploadMap.set(tempId, t.thumbnail.uploadedUrl);
+				thumbnailUploadMap.set(tempId, t.thumbnail.uploadRef);
 			}
 		}
 
@@ -177,29 +187,30 @@ export async function prepareForSubmit(
 						t.status === ThumbnailSubmitStatus.Replaced) &&
 					!thumbnailUploadMap.has(tempId),
 			);
-			const { results, successfulUrls } = await settledUpload(
+			const { results, successfulRefs } = await settledUpload(
 				toUpload,
 				async ({ tempId, thumbnailForSubmit: t }) => {
 					const file = extractThumbnailFile(
 						(t as { thumbnail: Thumbnail }).thumbnail,
 					);
 					const result = await uploadThumbnailFile(file);
-					return { tempId, uploadedUrl: result.uploadedUrl };
+					return { tempId, uploadRef: result.uploadRef };
 				},
 			);
-			allSuccessfulUrls.push(...successfulUrls);
+			allSuccessfulRefs.push(...successfulRefs);
 			for (const r of results) {
-				thumbnailUploadMap.set(r.tempId, r.uploadedUrl);
+				thumbnailUploadMap.set(r.tempId, r.uploadRef);
 			}
 		}
 
 		// --- 解決済み payload 組み立て ---
 		const resolved: ResolvedVideoForSubmit[] = videosForSubmit.map((vid) => {
-			const uploadedUrl = videoUploadMap.get(vid.tempId) ?? vid.uploadedUrl;
+			const uploadedUrl =
+				videoUploadMap.get(vid.tempId) ?? resolveVideoRef(vid);
 			if (!uploadedUrl) {
 				throw new PrepareForSubmitError(
-					`Missing uploadedUrl for video ${vid.tempId}. Pass uploadFile to prepareForSubmit or set uploadOnSelect on the controller.`,
-					allSuccessfulUrls,
+					`Missing uploadRef for video ${vid.tempId}. Pass uploadFile to prepareForSubmit or set uploadOnSelect on the controller.`,
+					allSuccessfulRefs,
 				);
 			}
 
@@ -208,7 +219,7 @@ export async function prepareForSubmit(
 				entry?.thumbnailForSubmit ?? null,
 				thumbnailUploadMap.get(vid.tempId),
 				vid.tempId,
-				allSuccessfulUrls,
+				allSuccessfulRefs,
 			);
 
 			return {
@@ -226,7 +237,7 @@ export async function prepareForSubmit(
 		if (err instanceof PrepareForSubmitError) throw err;
 		throw new PrepareForSubmitError(
 			err instanceof Error ? err.message : String(err),
-			allSuccessfulUrls,
+			allSuccessfulRefs,
 		);
 	}
 }
@@ -235,7 +246,7 @@ function resolveThumbnail(
 	t: ThumbnailForSubmit | null,
 	resolvedUploadedUrl: string | undefined,
 	tempId: string,
-	allSuccessfulUrls: string[],
+	allSuccessfulRefs: string[],
 ): ResolvedThumbnailForSubmit | null {
 	if (!t) return null;
 
@@ -246,11 +257,11 @@ function resolveThumbnail(
 			return { status: t.status };
 		case ThumbnailSubmitStatus.New:
 		case ThumbnailSubmitStatus.Replaced: {
-			const uploadedUrl = resolvedUploadedUrl ?? t.thumbnail.uploadedUrl;
+			const uploadedUrl = resolvedUploadedUrl ?? t.thumbnail.uploadRef;
 			if (!uploadedUrl) {
 				throw new PrepareForSubmitError(
-					`Missing uploadedUrl for thumbnail of video ${tempId}. Pass uploadThumbnailFile to prepareForSubmit or set uploadOnSelect on the controller.`,
-					allSuccessfulUrls,
+					`Missing uploadRef for thumbnail of video ${tempId}. Pass uploadThumbnailFile to prepareForSubmit or set uploadOnSelect on the controller.`,
+					allSuccessfulRefs,
 				);
 			}
 			return {

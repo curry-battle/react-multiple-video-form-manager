@@ -2,24 +2,18 @@ import { isPlainObject, normalizeErrorLeaf } from "../core/normalizeErrorLeaf";
 import type { Video } from "../core/types/Video";
 import type {
 	SingleVideoError,
+	VideoErrorFieldKey,
 	VideoFieldError,
 	VideosError,
 } from "../core/types/VideoSchemaTypes";
+import { VIDEO_ERROR_FIELD_KEYS } from "../core/types/VideoSchemaTypes";
 
-const VIDEO_FIELD_KEYS = [
-	"file",
-	"thumbnail",
-	"id",
-	"uploadedUrl",
-	"status",
-] as const;
+const VIDEO_ERROR_FIELD_KEY_SET: ReadonlySet<string> = new Set(
+	VIDEO_ERROR_FIELD_KEYS,
+);
 
-type VideoFieldKey = (typeof VIDEO_FIELD_KEYS)[number];
-
-const VIDEO_FIELD_KEY_SET: ReadonlySet<string> = new Set(VIDEO_FIELD_KEYS);
-
-const isVideoFieldKey = (s: string): s is VideoFieldKey =>
-	VIDEO_FIELD_KEY_SET.has(s);
+const isVideoFieldKey = (s: string): s is VideoErrorFieldKey =>
+	VIDEO_ERROR_FIELD_KEY_SET.has(s);
 
 export type NormalizeTanstackErrorsInput = {
 	/**
@@ -62,7 +56,7 @@ export function normalizeTanstackErrors(
 
 	const setItem = (
 		index: number,
-		key: VideoFieldKey,
+		key: VideoErrorFieldKey,
 		leaf: VideoFieldError,
 	) => {
 		while (indexItems.length <= index) indexItems.push(undefined);

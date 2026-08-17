@@ -17,7 +17,7 @@ const makeNewVideo = (overrides?: Partial<VideoNew>): VideoNew => ({
 	status: VideoFormStatus.New,
 	id: undefined,
 	file: new File(["data"], "test.mp4", { type: "video/mp4" }),
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 	thumbnail: null,
 	...overrides,
 });

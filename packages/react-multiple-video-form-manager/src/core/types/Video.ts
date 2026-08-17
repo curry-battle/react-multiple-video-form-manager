@@ -13,7 +13,7 @@ export type VideoNew = VideoBase & {
 	status: typeof VideoFormStatus.New;
 	id?: undefined;
 	file: File;
-	uploadedUrl?: string;
+	uploadRef?: string;
 	// サムネイル（フレームキャプチャ or アップロード、未設定は null）
 	thumbnail: Thumbnail | null;
 };
@@ -37,8 +37,14 @@ export type VideoForSubmit = VideoForSubmitNew | VideoForSubmitExisting;
 
 export type ProcessFileFn = (file: File) => Promise<File>;
 
+/**
+ * 転送先が返す参照。URL とは限らない（一時領域のトークンなど）ので
+ * `VideoExisting.uploadedUrl` / `ThumbnailExisting.uploadedUrl` とは別概念として扱い、
+ * スキーマでも URL 検証をかけない。表示用の URL は `usePreviewUrl` /
+ * `useThumbnailPreviewUrl` が File と既存 URL から導出する。
+ */
 export type UploadFileResult = {
-	uploadedUrl: string;
+	uploadRef: string;
 };
 
 export type UploadFileFn = (file: File) => Promise<UploadFileResult>;
@@ -56,11 +62,11 @@ export type UploadHandlers = {
  */
 export type UploadOnSelectOptions = UploadHandlers & {
 	/**
-	 * アップロード成功後にコミットできなかった URL の通知コールバック。
+	 * アップロード成功後にコミットできなかった転送参照の通知コールバック。
 	 * epoch stale（同一動画への後続操作で先行結果が破棄）、maxVideos 競合、
 	 * サムネイル更新失敗などで発生する。呼び出し側でファイル削除等の後始末に使う。
 	 */
-	onOrphanedUpload?: (uploadedUrl: string) => void;
+	onOrphanedUpload?: (uploadRef: string) => void;
 };
 
 // functions
@@ -74,13 +80,13 @@ export const generateTempId = (): string => {
 };
 
 export const VideoUtils = {
-	createNew: (tempId: string, file: File, uploadedUrl?: string): VideoNew => {
+	createNew: (tempId: string, file: File, uploadRef?: string): VideoNew => {
 		return {
 			tempId,
 			id: undefined,
 			status: VideoFormStatus.New,
 			file,
-			...(uploadedUrl !== undefined && { uploadedUrl }),
+			...(uploadRef !== undefined && { uploadRef }),
 			thumbnail: null,
 		};
 	},
@@ -109,7 +115,7 @@ export const VideoUtils = {
 			id: undefined,
 			status: VideoFormStatus.New,
 			file: newFile,
-			uploadedUrl: undefined,
+			uploadRef: undefined,
 			thumbnail: video.thumbnail,
 		};
 	},
@@ -185,7 +191,7 @@ if (import.meta.vitest) {
 		status: VideoFormStatus.New,
 		id: undefined,
 		file: new File(["data"], "test.mp4", { type: "video/mp4" }),
-		uploadedUrl: undefined,
+		uploadRef: undefined,
 		thumbnail: null,
 		...overrides,
 	});

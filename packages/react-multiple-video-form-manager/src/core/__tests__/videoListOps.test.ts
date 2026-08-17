@@ -11,7 +11,7 @@ const makeNewVideo = (overrides?: Partial<VideoNew>): VideoNew => ({
 	status: VideoFormStatus.New,
 	id: undefined,
 	file: new File(["data"], "test.mp4", { type: "video/mp4" }),
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 	thumbnail: null,
 	...overrides,
 });
@@ -51,7 +51,7 @@ describe("videoListOps", () => {
 			expect(result.videos[1].status).toBe(VideoFormStatus.New);
 		});
 
-		it("uploadedUrl 付きで追加できること", () => {
+		it("uploadRef 付きで追加できること", () => {
 			const file = new File(["v"], "a.mp4", { type: "video/mp4" });
 			const result = ops.addVideo(
 				[],
@@ -60,15 +60,15 @@ describe("videoListOps", () => {
 				"https://s3.example.com/a.mp4",
 			);
 			expect(result.added).toBe(true);
-			expect((result.videos[0] as VideoNew).uploadedUrl).toBe(
+			expect((result.videos[0] as VideoNew).uploadRef).toBe(
 				"https://s3.example.com/a.mp4",
 			);
 		});
 
-		it("uploadedUrl 未指定時は uploadedUrl が設定されないこと", () => {
+		it("uploadRef 未指定時は uploadRef が設定されないこと", () => {
 			const file = new File(["v"], "a.mp4", { type: "video/mp4" });
 			const result = ops.addVideo([], file);
-			expect((result.videos[0] as VideoNew).uploadedUrl).toBeUndefined();
+			expect((result.videos[0] as VideoNew).uploadRef).toBeUndefined();
 		});
 
 		it("maxVideos 超過で不変 + added:false", () => {
@@ -116,7 +116,7 @@ describe("videoListOps", () => {
 			expect(result.deletedId).toBeNull();
 		});
 
-		it("Existing → New 差し替え時に uploadedUrl が保持されること", () => {
+		it("Existing → New 差し替え時に uploadRef が保持されること", () => {
 			const ex = makeExistingVideo({ tempId: "temp_ex" });
 			const file = new File(["v"], "new.mp4", { type: "video/mp4" });
 			const result = ops.changeFile(
@@ -126,12 +126,12 @@ describe("videoListOps", () => {
 				"https://s3.example.com/new.mp4",
 			);
 			expect(result.changed).toBe(true);
-			expect((result.videos[0] as VideoNew).uploadedUrl).toBe(
+			expect((result.videos[0] as VideoNew).uploadRef).toBe(
 				"https://s3.example.com/new.mp4",
 			);
 		});
 
-		it("New → New 差し替え時に uploadedUrl が保持されること", () => {
+		it("New → New 差し替え時に uploadRef が保持されること", () => {
 			const nv = makeNewVideo({ tempId: "temp_n" });
 			const file = new File(["v"], "n2.mp4", { type: "video/mp4" });
 			const result = ops.changeFile(
@@ -141,7 +141,7 @@ describe("videoListOps", () => {
 				"https://s3.example.com/n2.mp4",
 			);
 			expect(result.changed).toBe(true);
-			expect((result.videos[0] as VideoNew).uploadedUrl).toBe(
+			expect((result.videos[0] as VideoNew).uploadRef).toBe(
 				"https://s3.example.com/n2.mp4",
 			);
 		});

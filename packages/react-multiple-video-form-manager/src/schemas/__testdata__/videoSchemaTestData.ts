@@ -53,7 +53,7 @@ export const validNewVideo = {
 	status: "new" as const,
 	id: undefined,
 	file: makeMp4File(),
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 	thumbnail: null,
 };
 
@@ -62,7 +62,7 @@ export const validNewVideoWithThumbnail = {
 	status: "new" as const,
 	id: undefined,
 	file: makeMp4File(),
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 	thumbnail: validThumbnailFromFrame,
 };
 
@@ -86,21 +86,22 @@ export const validExistingVideoNoThumbnail = {
 	thumbnailRemoved: false,
 };
 
-export const validNewVideoWithUploadedUrl = {
+export const validNewVideoWithUploadRef = {
 	tempId: "temp_uploaded",
 	status: "new" as const,
 	id: undefined,
 	file: makeMp4File(),
-	uploadedUrl: "https://s3.example.com/uploaded.mp4",
+	uploadRef: "https://s3.example.com/uploaded.mp4",
 	thumbnail: null,
 };
 
-export const invalidNewVideoWithBadUploadedUrl = {
-	tempId: "temp_bad_url",
+// 転送先はキーやトークンを返すこともあるため、uploadRef は URL 形式を要求しない
+export const validNewVideoWithOpaqueUploadRef = {
+	tempId: "temp_opaque_ref",
 	status: "new" as const,
 	id: undefined,
 	file: makeMp4File(),
-	uploadedUrl: "not-a-url",
+	uploadRef: "uploads/2026/08/17/abcd1234",
 	thumbnail: null,
 };
 
@@ -111,7 +112,7 @@ export const invalidNewVideoWithWrongType = {
 	status: "new" as const,
 	id: undefined,
 	file: new File(["data"], "video.avi", { type: "video/x-msvideo" }),
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 	thumbnail: null,
 };
 
@@ -119,7 +120,7 @@ export const invalidNewVideoWithoutFile = {
 	tempId: "temp_nofile",
 	status: "new" as const,
 	id: undefined,
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 	thumbnail: null,
 };
 
@@ -155,7 +156,7 @@ export const invalidNewVideoWithBadThumbnailType = {
 	status: "new" as const,
 	id: undefined,
 	file: makeMp4File(),
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 	thumbnail: {
 		source: ThumbnailSource.Upload,
 		file: new File(["data"], "thumb.gif", { type: "image/gif" }),

@@ -74,13 +74,13 @@ export function createVideosSchema(options: VideoSchemaOptions) {
 		source: z.literal(ThumbnailSource.Frame),
 		blob: z.instanceof(Blob),
 		timestamp: z.number(),
-		uploadedUrl: z.url().optional(),
+		uploadRef: z.string().optional(),
 	});
 
 	const thumbnailFromUploadSchema = z.object({
 		source: z.literal(ThumbnailSource.Upload),
 		file: thumbnailUploadFileSchema,
-		uploadedUrl: z.url().optional(),
+		uploadRef: z.string().optional(),
 	});
 
 	const thumbnailExistingSchema = z.object({
@@ -94,7 +94,7 @@ export function createVideosSchema(options: VideoSchemaOptions) {
 		status: z.literal(VideoFormStatus.New),
 		id: z.undefined(),
 		file: videoFileSchema,
-		uploadedUrl: z.url().optional(),
+		uploadRef: z.string().optional(),
 		thumbnail: z.nullable(
 			z.union([thumbnailFromFrameSchema, thumbnailFromUploadSchema]),
 		),
@@ -116,7 +116,14 @@ export function createVideosSchema(options: VideoSchemaOptions) {
 		thumbnailRemoved: z.boolean(),
 	});
 
-	const videoUnion = z.union([newVideoSchema, existingVideoSchema]);
+	// discriminatedUnion にすると、status で 1 ブランチに確定してからそのブランチの
+	// issue をそのまま報告する。z.union だと型不一致（`thumbnailRemoved: "yes"` など）は
+	// 「どのブランチにも合致しない」と畳まれ、フィールドキーの無い項目単位エラーになるため、
+	// 正規化しても items[tempId].<key> に届かない。
+	const videoUnion = z.discriminatedUnion("status", [
+		newVideoSchema,
+		existingVideoSchema,
+	]);
 
 	let arraySchema = z.array(videoUnion);
 
@@ -161,8 +168,8 @@ if (import.meta.vitest) {
 		makeLargeThumbnailFile,
 		validThumbnailFromFrame,
 		validThumbnailFromUpload,
-		validNewVideoWithUploadedUrl,
-		invalidNewVideoWithBadUploadedUrl,
+		validNewVideoWithUploadRef,
+		validNewVideoWithOpaqueUploadRef,
 	} = await import("./__testdata__/videoSchemaTestData");
 
 	// テスト用のデフォルトスキーマ
@@ -203,17 +210,17 @@ if (import.meta.vitest) {
 			});
 		});
 
-		describe("uploadedUrl", () => {
-			it("有効なuploadedUrl付きVideoNewを受け入れること", () => {
+		describe("uploadRef", () => {
+			it("uploadRef付きVideoNewを受け入れること", () => {
 				expect(
-					videosSchema.safeParse([validNewVideoWithUploadedUrl]).success,
+					videosSchema.safeParse([validNewVideoWithUploadRef]).success,
 				).toBe(true);
 			});
 
-			it("不正なuploadedUrl付きVideoNewをrejectすること", () => {
+			it("URL形式でないuploadRefでも受け入れること", () => {
 				expect(
-					videosSchema.safeParse([invalidNewVideoWithBadUploadedUrl]).success,
-				).toBe(false);
+					videosSchema.safeParse([validNewVideoWithOpaqueUploadRef]).success,
+				).toBe(true);
 			});
 		});
 

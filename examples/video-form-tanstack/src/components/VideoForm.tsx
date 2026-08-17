@@ -28,16 +28,16 @@ const uploadOptions: PrepareForSubmitOptions = {
 			file.name,
 			file.type,
 		);
-		const uploadedUrl = await API.uploadToS3(videoId, file, presignedUrl);
-		return { uploadedUrl };
+		const uploadRef = await API.uploadToS3(videoId, file, presignedUrl);
+		return { uploadRef };
 	},
 	uploadThumbnailFile: async (file: File) => {
 		const { presignedUrl, videoId } = await API.getPresignedUrl(
 			file.name,
 			file.type,
 		);
-		const uploadedUrl = await API.uploadToS3(videoId, file, presignedUrl);
-		return { uploadedUrl };
+		const uploadRef = await API.uploadToS3(videoId, file, presignedUrl);
+		return { uploadRef };
 	},
 };
 
@@ -89,10 +89,10 @@ export function VideoForm({ initialVideos }: VideoFormProps) {
 				await API.updateVideos(videosForUpdate, [...deletedIds]);
 			} catch (error) {
 				const prepareError = error as PrepareForSubmitError;
-				if (prepareError.successfulUploadUrls) {
+				if (prepareError.successfulUploadRefs) {
 					console.error(
 						"Partial upload success, orphan URLs:",
-						prepareError.successfulUploadUrls,
+						prepareError.successfulUploadRefs,
 					);
 				}
 				console.error("Submit error:", error);

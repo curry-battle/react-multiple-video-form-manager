@@ -87,13 +87,13 @@ export function createVideosSchema(options: VideoSchemaOptions) {
 		source: v.literal(ThumbnailSource.Frame),
 		blob: v.instance(Blob),
 		timestamp: v.number(),
-		uploadedUrl: v.optional(v.pipe(v.string(), v.url())),
+		uploadRef: v.optional(v.string()),
 	});
 
 	const thumbnailFromUploadSchema = v.object({
 		source: v.literal(ThumbnailSource.Upload),
 		file: thumbnailUploadFileSchema,
-		uploadedUrl: v.optional(v.pipe(v.string(), v.url())),
+		uploadRef: v.optional(v.string()),
 	});
 
 	const thumbnailExistingSchema = v.object({
@@ -107,7 +107,7 @@ export function createVideosSchema(options: VideoSchemaOptions) {
 		status: v.literal(VideoFormStatus.New),
 		id: v.undefined(),
 		file: videoFileSchema,
-		uploadedUrl: v.optional(v.pipe(v.string(), v.url())),
+		uploadRef: v.optional(v.string()),
 		thumbnail: v.nullable(
 			v.union([thumbnailFromFrameSchema, thumbnailFromUploadSchema]),
 		),
@@ -129,7 +129,8 @@ export function createVideosSchema(options: VideoSchemaOptions) {
 		thumbnailRemoved: v.boolean(),
 	});
 
-	const videoUnion = v.union([newVideoSchema, existingVideoSchema]);
+	// variant にする理由は zod.ts の videoUnion と同じ
+	const videoUnion = v.variant("status", [newVideoSchema, existingVideoSchema]);
 
 	if (maxVideos !== undefined) {
 		return v.pipe(
@@ -173,8 +174,8 @@ if (import.meta.vitest) {
 		makeLargeThumbnailFile,
 		validThumbnailFromFrame,
 		validThumbnailFromUpload,
-		validNewVideoWithUploadedUrl,
-		invalidNewVideoWithBadUploadedUrl,
+		validNewVideoWithUploadRef,
+		validNewVideoWithOpaqueUploadRef,
 	} = await import("./__testdata__/videoSchemaTestData");
 
 	// テスト用のデフォルトスキーマ
@@ -218,18 +219,17 @@ if (import.meta.vitest) {
 			});
 		});
 
-		describe("uploadedUrl", () => {
-			it("有効なuploadedUrl付きVideoNewを受け入れること", () => {
+		describe("uploadRef", () => {
+			it("uploadRef付きVideoNewを受け入れること", () => {
 				expect(
-					v.safeParse(videosSchema, [validNewVideoWithUploadedUrl]).success,
+					v.safeParse(videosSchema, [validNewVideoWithUploadRef]).success,
 				).toBe(true);
 			});
 
-			it("不正なuploadedUrl付きVideoNewをrejectすること", () => {
+			it("URL形式でないuploadRefでも受け入れること", () => {
 				expect(
-					v.safeParse(videosSchema, [invalidNewVideoWithBadUploadedUrl])
-						.success,
-				).toBe(false);
+					v.safeParse(videosSchema, [validNewVideoWithOpaqueUploadRef]).success,
+				).toBe(true);
 			});
 		});
 

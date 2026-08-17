@@ -5,15 +5,8 @@ import type {
 	VideoFieldError,
 	VideosError,
 } from "../core/types/VideoSchemaTypes";
+import { VIDEO_ERROR_FIELD_KEYS } from "../core/types/VideoSchemaTypes";
 import type { RhfSingleVideoError, RhfVideosError } from "./types";
-
-const VIDEO_FIELD_KEYS = [
-	"file",
-	"thumbnail",
-	"id",
-	"uploadedUrl",
-	"status",
-] as const;
 
 const normalizeItem = (
 	rawItem: RhfSingleVideoError | undefined,
@@ -21,7 +14,7 @@ const normalizeItem = (
 	if (rawItem === undefined || rawItem === null) return undefined;
 	const out: SingleVideoError = {};
 	let hasAny = false;
-	for (const key of VIDEO_FIELD_KEYS) {
+	for (const key of VIDEO_ERROR_FIELD_KEYS) {
 		const leaf = (rawItem as Record<string, unknown>)[key];
 		if (leaf === undefined) continue;
 		out[key] = normalizeErrorLeaf(leaf);

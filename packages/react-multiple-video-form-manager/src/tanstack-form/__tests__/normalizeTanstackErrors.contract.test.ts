@@ -26,7 +26,7 @@ function makeVideo(tempId: string, file: File): Video {
 		status: "new",
 		id: undefined,
 		file,
-		uploadedUrl: undefined,
+		uploadRef: undefined,
 		thumbnail: null,
 	};
 }
@@ -78,6 +78,37 @@ describe("normalizeTanstackErrors contract test", () => {
 		expect(r.root).toHaveLength(0);
 	});
 
+	it("thumbnailRemoved のスキーマエラーが items[tempId].thumbnailRemoved に届く", () => {
+		const videos = [
+			{
+				tempId: "t1",
+				status: "existing",
+				id: "vid-1",
+				file: undefined,
+				uploadedUrl: "https://s3.example.com/video.mp4",
+				thumbnail: null,
+				thumbnailRemoved: "yes",
+			} as unknown as Video,
+		];
+		const r = parseAndNormalize(videos);
+
+		expect(r.items.t1?.thumbnailRemoved?.message).toBeDefined();
+		expect(r.root).toHaveLength(0);
+	});
+
+	it("uploadRef のスキーマエラーが items[tempId].uploadRef に届く", () => {
+		const videos = [
+			{
+				...makeVideo("t1", new File(["x"], "v.mp4", { type: "video/mp4" })),
+				uploadRef: 42,
+			} as unknown as Video,
+		];
+		const r = parseAndNormalize(videos);
+
+		expect(r.items.t1?.uploadRef?.message).toBeDefined();
+		expect(r.root).toHaveLength(0);
+	});
+
 	it("maxVideos 超過エラーが root に現れ items は空", () => {
 		const mk = (i: number) =>
 			makeVideo(`t${i}`, new File(["x"], `v${i}.mp4`, { type: "video/mp4" }));
@@ -88,14 +119,14 @@ describe("normalizeTanstackErrors contract test", () => {
 		expect(Object.keys(r.items)).toHaveLength(0);
 	});
 
-	it("union 不一致（thumbnail 型不正）は要素レベルエラーとして root に来る", () => {
+	it("thumbnail の入れ子エラーは items[tempId].thumbnail に届き、残りのパスは source に残る", () => {
 		const videos: Video[] = [
 			{
 				tempId: "t1",
 				status: "new",
 				id: undefined,
 				file: new File(["x"], "v.mp4", { type: "video/mp4" }),
-				uploadedUrl: undefined,
+				uploadRef: undefined,
 				thumbnail: {
 					source: ThumbnailSource.Upload,
 					file: "not-a-file",
@@ -104,8 +135,9 @@ describe("normalizeTanstackErrors contract test", () => {
 		];
 		const r = parseAndNormalize(videos);
 
-		expect(r.root.length).toBeGreaterThan(0);
-		expect(r.root.some((e) => e.source !== undefined)).toBe(true);
+		expect(r.items.t1?.thumbnail?.message).toBeDefined();
+		expect(r.items.t1?.thumbnail?.source).toBeDefined();
+		expect(r.root).toHaveLength(0);
 	});
 
 	it("errorMap の field キーが bracket 記法であること（最低1キー存在を保証）", () => {

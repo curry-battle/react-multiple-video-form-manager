@@ -41,7 +41,7 @@ export const makeNew = (tempId: string): VideoNew => ({
 	status: VideoFormStatus.New,
 	id: undefined,
 	file: makeFile(),
-	uploadedUrl: undefined,
+	uploadRef: undefined,
 	thumbnail: null,
 });
 
@@ -91,8 +91,8 @@ function VideoItem({
 			<span data-testid={`name-${index}`}>
 				{video.status === VideoFormStatus.New ? video.file.name : video.id}
 			</span>
-			{video.uploadedUrl && (
-				<span data-testid={`uploaded-url-${index}`}>{video.uploadedUrl}</span>
+			{video.status === VideoFormStatus.New && video.uploadRef && (
+				<span data-testid={`upload-ref-${index}`}>{video.uploadRef}</span>
 			)}
 			<span data-testid={`has-thumbnail-${index}`}>
 				{video.thumbnail ? "yes" : "no"}
