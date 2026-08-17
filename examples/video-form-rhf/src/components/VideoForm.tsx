@@ -2,7 +2,7 @@ import {
 	getFileFromChangeEvent,
 	type MultiVideoError,
 	type PrepareForSubmitError,
-	type UploadOnSelectOptions,
+	type UploadFileFn,
 	type Video,
 } from "@curry-battle/react-multiple-video-form-manager";
 import { MultiVideoController } from "@curry-battle/react-multiple-video-form-manager/react-hook-form";
@@ -23,23 +23,21 @@ interface VideoFormProps {
 
 // このサンプルは upload-on-select（opt-in）を実演する。
 // video-form-tanstack 側は upload-on-submit（デフォルト）を実演する。
-const uploadOnSelect: UploadOnSelectOptions = {
-	uploadFile: async (file: File) => {
-		const { presignedUrl, videoId } = await API.getPresignedUrl(
-			file.name,
-			file.type,
-		);
-		const uploadRef = await API.uploadToS3(videoId, file, presignedUrl);
-		return { uploadRef };
-	},
-	uploadThumbnailFile: async (file: File) => {
-		const { presignedUrl, videoId } = await API.getPresignedUrl(
-			file.name,
-			file.type,
-		);
-		const uploadRef = await API.uploadToS3(videoId, file, presignedUrl);
-		return { uploadRef };
-	},
+//
+// 本体とサムネイルで転送先を分けたい場合は ctx.kind で分岐する。
+// このサンプルは同じ presigned URL の発行経路を使うので分岐しない。
+const uploadFile: UploadFileFn = async (file, ctx) => {
+	const { presignedUrl, videoId } = await API.getPresignedUrl(
+		file.name,
+		file.type,
+	);
+	const uploadRef = await API.uploadToS3(
+		videoId,
+		file,
+		presignedUrl,
+		ctx.signal,
+	);
+	return { uploadRef };
 };
 
 export function VideoForm({ initialVideos }: VideoFormProps) {
@@ -73,7 +71,7 @@ export function VideoForm({ initialVideos }: VideoFormProps) {
 				form={form}
 				name="videos"
 				maxVideos={5}
-				uploadOnSelect={uploadOnSelect}
+				uploadFile={uploadFile}
 				onError={handleError}
 				render={({
 					items,
@@ -81,6 +79,7 @@ export function VideoForm({ initialVideos }: VideoFormProps) {
 					addVideo,
 					isBusy,
 					raw,
+					uploads,
 					prepareForSubmit,
 				}) => {
 					const maxVideos = 5;
@@ -88,9 +87,9 @@ export function VideoForm({ initialVideos }: VideoFormProps) {
 					const onSubmit = async (_data: VideoPostFormType) => {
 						setIsUploading(true);
 						try {
-							// このサンプルでは on-select 時にアップロードを行う方針をとっているため、
-							// prepareForSubmit() ではアップロード済みの URL を返すだけで、アップロードは行わない
-							// アップロード処理の詳細は uploadOnSelect を参照
+							// このサンプルでは選択時にアップロードを行う方針をとっているため、
+							// prepareForSubmit() は転送済みの参照を返すだけでアップロードは行わない。
+							// 転送の実装は uploadFile を参照
 							const { videos: resolved, deletedIds } = await prepareForSubmit();
 
 							const videosForUpdate = resolved.map((vid) => ({
@@ -274,7 +273,12 @@ export function VideoForm({ initialVideos }: VideoFormProps) {
 							<div className="pt-2">
 								<button
 									type="submit"
-									disabled={isUploading || isBusy || !formState.isValid}
+									disabled={
+										isUploading ||
+										isBusy ||
+										uploads.pending.length > 0 ||
+										!formState.isValid
+									}
 									className="w-full px-4 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 active:scale-[0.99] transition-all disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed shadow-sm"
 								>
 									{isUploading ? (

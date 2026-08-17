@@ -37,11 +37,14 @@ export {
 	ThumbnailUtils,
 } from "./core/types/Thumbnail";
 export type {
-	ProcessFileFn,
+	UploadFileContext,
 	UploadFileFn,
 	UploadFileResult,
-	UploadHandlers,
-	UploadOnSelectOptions,
+} from "./core/types/Upload";
+export { UPLOAD_KINDS, UploadKind } from "./core/types/Upload";
+export type { UploadState, VideoUploadState } from "./core/types/UploadState";
+export type {
+	ProcessFileFn,
 	Video,
 	VideoExisting,
 	VideoForSubmit,
@@ -70,6 +73,7 @@ export { VideoFormStatus } from "./core/types/VideoStatus";
 export {
 	type MultiVideoCoreOptions,
 	type MultiVideoRenderProps,
+	type UploadsApi,
 	type UseMultiVideoCoreParams,
 	type UseMultiVideoCoreReturn,
 	useMultiVideoCore,

@@ -22,21 +22,21 @@ interface VideoFormProps {
 
 // このサンプルは upload-on-submit（デフォルト戦略）を実演する。
 // video-form-rhf 側は upload-on-select（opt-in）を実演する。
+//
+// 本体とサムネイルで転送先を分けたい場合は ctx.kind で分岐する。
+// このサンプルは同じ presigned URL の発行経路を使うので分岐しない。
 const uploadOptions: PrepareForSubmitOptions = {
-	uploadFile: async (file: File) => {
+	uploadFile: async (file, ctx) => {
 		const { presignedUrl, videoId } = await API.getPresignedUrl(
 			file.name,
 			file.type,
 		);
-		const uploadRef = await API.uploadToS3(videoId, file, presignedUrl);
-		return { uploadRef };
-	},
-	uploadThumbnailFile: async (file: File) => {
-		const { presignedUrl, videoId } = await API.getPresignedUrl(
-			file.name,
-			file.type,
+		const uploadRef = await API.uploadToS3(
+			videoId,
+			file,
+			presignedUrl,
+			ctx.signal,
 		);
-		const uploadRef = await API.uploadToS3(videoId, file, presignedUrl);
 		return { uploadRef };
 	},
 };

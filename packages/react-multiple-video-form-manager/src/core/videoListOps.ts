@@ -1,36 +1,39 @@
 import type { AnyThumbnail, Thumbnail } from "./types/Thumbnail";
 import { ThumbnailSource } from "./types/Thumbnail";
-import type { Video } from "./types/Video";
-import { generateTempId, VideoUtils } from "./types/Video";
+import type { Video, VideoNew } from "./types/Video";
+import { VideoUtils } from "./types/Video";
 import { VideoFormStatus } from "./types/VideoStatus";
 
+/**
+ * 末尾に追加する。項目は転送の完了を待たずに配列へ入るので、呼び出し側が
+ * tempId を決めて `VideoNew` を組み、返った配列を反映してから転送を起動する。
+ *
+ * 上限の判定は持たない。「同期 read → 判定 → set」を 1 tick で閉じる呼び出し側が
+ * 担うほうが、判定と挿入のあいだに別の操作が割り込む余地が無い。
+ */
 export function addVideo(
 	videos: readonly Video[],
-	processedFile: File,
-	maxVideos?: number,
-	uploadRef?: string,
-): { videos: Video[]; added: boolean } {
-	if (maxVideos !== undefined && videos.length >= maxVideos) {
-		return { videos: [...videos], added: false };
-	}
-
-	const newVideo = VideoUtils.createNew(
-		generateTempId(),
-		processedFile,
-		uploadRef,
-	);
-	return { videos: [...videos, newVideo], added: true };
+	newVideo: VideoNew,
+): { videos: Video[] } {
+	return { videos: [...videos, newVideo] };
 }
 
+/**
+ * 対象のファイルを差し替える。差し替え後の `VideoNew` を返すのは、呼び出し側が
+ * その項目の転送を起動するのに要るため（Existing / New で作り方が違う）。
+ */
 export function changeFile(
 	videos: readonly Video[],
 	tempId: string,
 	processedFile: File,
-	uploadRef?: string,
-): { videos: Video[]; changed: boolean; deletedId: string | null } {
+): {
+	videos: Video[];
+	video: VideoNew | null;
+	deletedId: string | null;
+} {
 	const index = videos.findIndex((vid) => vid.tempId === tempId);
 	if (index === -1)
-		return { videos: [...videos], changed: false, deletedId: null };
+		return { videos: [...videos], video: null, deletedId: null };
 	const target = videos[index];
 
 	switch (target.status) {
@@ -41,21 +44,15 @@ export function changeFile(
 				target,
 				processedFile,
 			);
-			if (uploadRef !== undefined) {
-				newVideo.uploadRef = uploadRef;
-			}
 			const next = [...videos];
 			next[index] = newVideo;
-			return { videos: next, changed: true, deletedId };
+			return { videos: next, video: newVideo, deletedId };
 		}
 		case VideoFormStatus.New: {
 			const updated = VideoUtils.updateNewVideoFile(target, processedFile);
-			if (uploadRef !== undefined) {
-				updated.uploadRef = uploadRef;
-			}
 			const next = [...videos];
 			next[index] = updated;
-			return { videos: next, changed: true, deletedId: null };
+			return { videos: next, video: updated, deletedId: null };
 		}
 		default:
 			return target satisfies never;
@@ -131,35 +128,39 @@ export function moveTo(
 	return { videos: next, moved: true };
 }
 
+/**
+ * サムネイルを差し替える。差し替え後の項目を返すのは、呼び出し側がその項目の
+ * サムネイル転送を起動するのに要るため。
+ */
 export function setThumbnail(
 	videos: readonly Video[],
 	tempId: string,
 	thumbnail: Thumbnail | null,
-): { videos: Video[]; updated: boolean } {
+): { videos: Video[]; video: Video | null } {
 	const index = videos.findIndex((vid) => vid.tempId === tempId);
-	if (index === -1) return { videos: [...videos], updated: false };
+	if (index === -1) return { videos: [...videos], video: null };
 	const video = videos[index];
 
 	switch (video.status) {
 		case VideoFormStatus.New: {
 			const next = [...videos];
-			if (thumbnail) {
-				next[index] = VideoUtils.setThumbnail(video, thumbnail);
-			} else {
-				next[index] = { ...video, thumbnail: null };
-			}
-			return { videos: next, updated: true };
+			const updated = thumbnail
+				? VideoUtils.setThumbnail(video, thumbnail)
+				: { ...video, thumbnail: null };
+			next[index] = updated;
+			return { videos: next, video: updated };
 		}
 		case VideoFormStatus.Existing: {
 			const next = [...videos];
-			next[index] = {
+			const updated = {
 				...video,
 				thumbnail: thumbnail as AnyThumbnail | null,
 				thumbnailRemoved:
 					video.thumbnailRemoved ||
 					video.thumbnail?.source === ThumbnailSource.Existing,
 			};
-			return { videos: next, updated: true };
+			next[index] = updated;
+			return { videos: next, video: updated };
 		}
 		default:
 			return video satisfies never;

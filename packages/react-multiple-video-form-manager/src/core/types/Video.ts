@@ -37,38 +37,6 @@ export type VideoForSubmit = VideoForSubmitNew | VideoForSubmitExisting;
 
 export type ProcessFileFn = (file: File) => Promise<File>;
 
-/**
- * 転送先が返す参照。URL とは限らない（一時領域のトークンなど）ので
- * `VideoExisting.uploadedUrl` / `ThumbnailExisting.uploadedUrl` とは別概念として扱い、
- * スキーマでも URL 検証をかけない。表示用の URL は `usePreviewUrl` /
- * `useThumbnailPreviewUrl` が File と既存 URL から導出する。
- */
-export type UploadFileResult = {
-	uploadRef: string;
-};
-
-export type UploadFileFn = (file: File) => Promise<UploadFileResult>;
-
-export type UploadHandlers = {
-	uploadFile?: UploadFileFn;
-	uploadThumbnailFile?: UploadFileFn;
-};
-
-/**
- * ファイル選択時に即アップロードする戦略の設定。
- *
- * `uploadFile` / `uploadThumbnailFile` の一方だけを設定することもできる。
- * 未設定の種類は `prepareForSubmit(options)` に渡せば submit 時にアップロードされる。
- */
-export type UploadOnSelectOptions = UploadHandlers & {
-	/**
-	 * アップロード成功後にコミットできなかった転送参照の通知コールバック。
-	 * epoch stale（同一動画への後続操作で先行結果が破棄）、maxVideos 競合、
-	 * サムネイル更新失敗などで発生する。呼び出し側でファイル削除等の後始末に使う。
-	 */
-	onOrphanedUpload?: (uploadRef: string) => void;
-};
-
 // functions
 
 /**
@@ -120,12 +88,22 @@ export const VideoUtils = {
 		};
 	},
 
-	// 既存動画を新しいファイルで差し替え（deletedId を返す）
+	/**
+	 * 既存動画を新しいファイルで差し替え（削除する id を返す）。
+	 *
+	 * tempId は引き継ぐ。項目を先に入れて転送を裏で走らせる構成では、tempId が
+	 * 変わると台帳のキーと React の key が差し替えの瞬間に別物になり、行が一度消えて
+	 * 別の行として現れる。tempId を保てば差し替えは stale 判定（index 再解決 →
+	 * 参照比較）という主経路で処理され、旧レコードを孤児回収に頼らずに済む。
+	 *
+	 * 引き継げるのは、元項目が配列から消えて id が `deletedVideoIds` に入るため
+	 * 元の tempId を誰も使わないから。
+	 */
 	replaceExisting: (
 		existingVideo: VideoExisting,
 		newFile: File,
 	): { deletedId: string; newVideo: VideoNew } => {
-		const newVideo = VideoUtils.createNew(generateTempId(), newFile);
+		const newVideo = VideoUtils.createNew(existingVideo.tempId, newFile);
 		return { deletedId: existingVideo.id, newVideo };
 	},
 
@@ -342,9 +320,19 @@ if (import.meta.vitest) {
 
 				expect(result.deletedId).toBe(existing.id);
 				expect(result.newVideo.status).toBe(VideoFormStatus.New);
-				expect(result.newVideo.tempId).toMatch(/^temp_/);
 				expect(result.newVideo.file).toBe(newFile);
 				expect(result.newVideo.thumbnail).toBeNull();
+			});
+
+			it("tempId を引き継ぐこと", () => {
+				const existing = makeExisting({ tempId: "temp_keep-me" });
+				const newFile = new File(["data"], "replace.mp4", {
+					type: "video/mp4",
+				});
+
+				const result = VideoUtils.replaceExisting(existing, newFile);
+
+				expect(result.newVideo.tempId).toBe("temp_keep-me");
 			});
 		});
 

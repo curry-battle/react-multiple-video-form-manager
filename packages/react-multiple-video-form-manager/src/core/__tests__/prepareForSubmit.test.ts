@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { PrepareForSubmitError, prepareForSubmit } from "../prepareForSubmit";
 import { ThumbnailSource } from "../types/Thumbnail";
+import type { UploadFileContext } from "../types/Upload";
+import { UploadKind } from "../types/Upload";
 import type { VideoExisting, VideoNew } from "../types/Video";
 import { VideoFormStatus } from "../types/VideoStatus";
 
@@ -61,7 +63,10 @@ describe("prepareForSubmit", () => {
 
 		const result = await prepareForSubmit([video], [], { uploadFile });
 
-		expect(uploadFile).toHaveBeenCalledWith(video.file);
+		expect(uploadFile).toHaveBeenCalledWith(
+			video.file,
+			expect.objectContaining({ kind: UploadKind.Video }),
+		);
 		expect(result.videos[0].uploadedUrl).toBe(
 			"https://s3.example.com/uploaded.mp4",
 		);
@@ -165,24 +170,28 @@ describe("prepareForSubmit", () => {
 		expect(result.videos[0].thumbnail).toEqual({ status: "removed" });
 	});
 
-	it("uploads new thumbnail via uploadThumbnailFile", async () => {
+	it("uploads new thumbnail through the shared handler with kind: thumbnail", async () => {
 		const thumbFile = new File(["thumb"], "thumb.jpg", { type: "image/jpeg" });
 		const video = makeNewVideo({
 			thumbnail: { source: ThumbnailSource.Upload, file: thumbFile },
 		});
-		const uploadFile = vi
-			.fn()
-			.mockResolvedValue({ uploadRef: "https://s3.example.com/video.mp4" });
-		const uploadThumbnailFile = vi
-			.fn()
-			.mockResolvedValue({ uploadRef: "https://s3.example.com/thumb.jpg" });
+		const uploadFile = vi.fn(async (_file: File, ctx: UploadFileContext) => ({
+			uploadRef:
+				ctx.kind === UploadKind.Thumbnail
+					? "https://s3.example.com/thumb.jpg"
+					: "https://s3.example.com/video.mp4",
+		}));
 
-		const result = await prepareForSubmit([video], [], {
-			uploadFile,
-			uploadThumbnailFile,
-		});
+		const result = await prepareForSubmit([video], [], { uploadFile });
 
-		expect(uploadThumbnailFile).toHaveBeenCalledWith(thumbFile);
+		expect(uploadFile).toHaveBeenCalledWith(
+			thumbFile,
+			expect.objectContaining({ kind: UploadKind.Thumbnail }),
+		);
+		expect(uploadFile).toHaveBeenCalledWith(
+			video.file,
+			expect.objectContaining({ kind: UploadKind.Video }),
+		);
 		expect(result.videos[0].thumbnail).toEqual({
 			status: "new",
 			source: ThumbnailSource.Upload,
@@ -200,11 +209,11 @@ describe("prepareForSubmit", () => {
 				uploadRef: "https://s3.example.com/thumb-on-select.jpg",
 			},
 		});
-		const uploadThumbnailFile = vi.fn();
+		const uploadFile = vi.fn();
 
-		const result = await prepareForSubmit([video], [], { uploadThumbnailFile });
+		const result = await prepareForSubmit([video], [], { uploadFile });
 
-		expect(uploadThumbnailFile).not.toHaveBeenCalled();
+		expect(uploadFile).not.toHaveBeenCalled();
 		expect(result.videos[0].thumbnail?.status).toBe("new");
 		if (
 			result.videos[0].thumbnail?.status === "new" ||
@@ -225,13 +234,13 @@ describe("prepareForSubmit", () => {
 				timestamp: 1.5,
 			},
 		});
-		const uploadThumbnailFile = vi
+		const uploadFile = vi
 			.fn()
 			.mockResolvedValue({ uploadRef: "https://s3.example.com/thumb.jpg" });
 
-		const result = await prepareForSubmit([video], [], { uploadThumbnailFile });
+		const result = await prepareForSubmit([video], [], { uploadFile });
 
-		const calledFile = uploadThumbnailFile.mock.calls[0][0] as File;
+		const calledFile = uploadFile.mock.calls[0][0] as File;
 		expect(calledFile).toBeInstanceOf(File);
 		expect(calledFile.name).toBe("thumbnail.jpg");
 		expect(result.videos[0].thumbnail).toEqual({
@@ -266,11 +275,11 @@ describe("prepareForSubmit", () => {
 			thumbnail: { source: ThumbnailSource.Upload, file: thumbFile },
 			thumbnailRemoved: true,
 		});
-		const uploadThumbnailFile = vi.fn().mockResolvedValue({
+		const uploadFile = vi.fn().mockResolvedValue({
 			uploadRef: "https://s3.example.com/replaced-thumb.jpg",
 		});
 
-		const result = await prepareForSubmit([video], [], { uploadThumbnailFile });
+		const result = await prepareForSubmit([video], [], { uploadFile });
 
 		expect(result.videos[0].thumbnail).toEqual({
 			status: "replaced",
@@ -279,7 +288,7 @@ describe("prepareForSubmit", () => {
 		});
 	});
 
-	it("throws when thumbnail has no uploadRef and no uploadThumbnailFile", async () => {
+	it("throws when thumbnail has no uploadRef and no uploadFile", async () => {
 		const thumbFile = new File(["thumb"], "thumb.jpg", { type: "image/jpeg" });
 		const video = makeNewVideo({
 			uploadRef: "https://s3.example.com/video.mp4",

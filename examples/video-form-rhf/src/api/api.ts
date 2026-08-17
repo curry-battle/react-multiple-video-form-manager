@@ -1,5 +1,23 @@
 import { generateUUIDv7, type UUID } from "../libs/Uuid";
 
+/** 中断要求で止まる待機。転送ハンドラが ctx.signal を尊重する形を実演する */
+const delay = (ms: number, signal?: AbortSignal): Promise<void> =>
+	new Promise((resolve, reject) => {
+		if (signal?.aborted) {
+			reject(signal.reason);
+			return;
+		}
+		const timer = setTimeout(resolve, ms);
+		signal?.addEventListener(
+			"abort",
+			() => {
+				clearTimeout(timer);
+				reject(signal.reason);
+			},
+			{ once: true },
+		);
+	});
+
 export const API = {
 	getPresignedUrl: async (filename: string, contentType: string) => {
 		await new Promise((resolve) => setTimeout(resolve, 500));
@@ -17,8 +35,9 @@ export const API = {
 		videoId: UUID,
 		file: File,
 		uploadUrl: string,
+		signal?: AbortSignal,
 	): Promise<string> => {
-		await new Promise((resolve) => setTimeout(resolve, 1000));
+		await delay(1000, signal);
 		console.log(`Uploading file: ${file.name}`);
 
 		try {

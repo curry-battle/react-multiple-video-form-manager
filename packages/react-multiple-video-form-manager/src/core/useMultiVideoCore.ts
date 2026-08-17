@@ -10,11 +10,11 @@ import type {
 } from "./types/MultiVideoError";
 import type { Thumbnail } from "./types/Thumbnail";
 import { ThumbnailUtils } from "./types/Thumbnail";
-import type {
-	ProcessFileFn,
-	UploadOnSelectOptions,
-	Video,
-} from "./types/Video";
+import type { UploadFileFn } from "./types/Upload";
+import { UPLOAD_KINDS, UploadKind } from "./types/Upload";
+import type { UploadState, VideoUploadState } from "./types/UploadState";
+import type { ProcessFileFn, Video } from "./types/Video";
+import { generateTempId, VideoUtils } from "./types/Video";
 import type {
 	CoreMessages,
 	ItemHandlers,
@@ -25,6 +25,8 @@ import {
 	collectErrorMessages,
 	defaultCoreMessages,
 } from "./types/VideoSchemaTypes";
+import type { UploadSource } from "./uploadSlots";
+import { applyUploadRef, readUploadSource, slotKey } from "./uploadSlots";
 import type { VideoFieldAdapter } from "./VideoFieldAdapter";
 import * as ops from "./videoListOps";
 
@@ -33,12 +35,11 @@ export type UseMultiVideoCoreParams = {
 	processFile?: ProcessFileFn;
 	processThumbnailFile?: ProcessFileFn;
 	/**
-	 * ファイル選択時に即アップロードする戦略（opt-in）。
-	 * 設定すると add / changeFile / setThumbnail* で
-	 * 選択直後にアップロードが実行される。
-	 * 未設定の場合、アップロードは prepareForSubmit(options) に委ねられる。
+	 * 選択されたファイルをストレージへ転送する。設定すると add / changeFile /
+	 * setThumbnail* が項目を先にフォームへ入れ、転送は裏で走らせる。
+	 * 未設定なら転送は起きず、送信素材は生の `File` を運ぶ。
 	 */
-	uploadOnSelect?: UploadOnSelectOptions;
+	uploadFile?: UploadFileFn;
 	onError?: (error: MultiVideoError) => void;
 	maxVideos?: number;
 	messages?: CoreMessages;
@@ -63,6 +64,23 @@ export type UseMultiVideoCoreHandlers = {
 	removeThumbnail: (tempId: string) => Promise<boolean>;
 };
 
+export type UploadsApi = {
+	/** 転送中のスロットを持つ tempId。件数は length */
+	pending: string[];
+	/** 転送に失敗したスロットを持つ tempId */
+	failed: string[];
+	/**
+	 * 失敗したスロットだけを再送する。全スロットを撃ち直すと、成功済みの本体を
+	 * もう一度流すことになる。粒度を `retry(tempId, kind)` にしないのは、消費側の
+	 * UI が項目ごとのリトライボタンで kind 単位の操作を必要としないため。
+	 *
+	 * 戻り値は再送を発行したかどうか。「本体 pending / サムネイル failed」なら
+	 * サムネイルだけ再送して true、「両方 pending」なら false。転送の成否は
+	 * `items[].uploadState` と `failed` で追う
+	 */
+	retry: (tempId: string) => boolean;
+};
+
 export type UseMultiVideoCoreReturn = {
 	items: VideoItem[];
 	rootErrors: VideoFieldError[];
@@ -71,6 +89,7 @@ export type UseMultiVideoCoreReturn = {
 	pendingOperations: ReadonlySet<string>;
 	isAdding: boolean;
 	isBusy: boolean;
+	uploads: UploadsApi;
 	prepareForSubmit: PrepareForSubmitFn;
 };
 
@@ -81,6 +100,28 @@ export type MultiVideoRenderProps = Omit<
 	addVideo: (file: File) => Promise<boolean>;
 };
 
+/**
+ * 転送の台帳。フォーム state には持たない（`UploadState` の doc を参照）。
+ *
+ * キーは `${tempId}:${kind}` の複合キー（`slotKey`）。`token` は書き戻しの可否を
+ * 決める同一性比較の対象で、「その転送参照がどのオブジェクトのものか」を後から
+ * 検証するために status を跨いで常に持つ。
+ */
+type UploadRecord = {
+	tempId: string;
+	kind: UploadKind;
+	token: Blob | File;
+} & (
+	| {
+			status: "pending";
+			controller: AbortController;
+			/** 転送が settle したら解決する */
+			settled: Promise<void>;
+	  }
+	| { status: "done"; uploadRef: string }
+	| { status: "failed"; error: unknown }
+);
+
 export function useMultiVideoCore(
 	params: UseMultiVideoCoreParams,
 ): UseMultiVideoCoreReturn {
@@ -88,7 +129,7 @@ export function useMultiVideoCore(
 		adapter,
 		processFile,
 		processThumbnailFile,
-		uploadOnSelect,
+		uploadFile,
 		onError,
 		maxVideos,
 		messages,
@@ -107,18 +148,10 @@ export function useMultiVideoCore(
 		onErrorRef.current = onError;
 	}, [onError]);
 
-	// 消費側はインラインオブジェクトを毎レンダー渡すため、effect 同期だと
-	// 参照が変わるたびに再発火してしまう。レンダー時代入なら effect コスト無しで常に最新値を読める。
-	const uploadOnSelectRef = useRef(uploadOnSelect);
-	uploadOnSelectRef.current = uploadOnSelect;
-
-	const notifyOrphan = useCallback((uploadRef: string) => {
-		try {
-			uploadOnSelectRef.current?.onOrphanedUpload?.(uploadRef);
-		} catch {
-			// cleanup hook の失敗は主操作の制御フローを壊さない
-		}
-	}, []);
+	// 消費側はインライン関数を毎レンダー渡すため、effect 同期だと参照が変わるたびに
+	// 再発火してしまう。レンダー時代入なら effect コスト無しで常に最新値を読める。
+	const uploadFileRef = useRef(uploadFile);
+	uploadFileRef.current = uploadFile;
 
 	const msgRef = useRef<Required<CoreMessages>>(defaultCoreMessages);
 	msgRef.current = {
@@ -127,9 +160,7 @@ export function useMultiVideoCore(
 		processThumbnailFile:
 			messages?.processThumbnailFile ??
 			defaultCoreMessages.processThumbnailFile,
-		uploadFile: messages?.uploadFile ?? defaultCoreMessages.uploadFile,
-		uploadThumbnailFile:
-			messages?.uploadThumbnailFile ?? defaultCoreMessages.uploadThumbnailFile,
+		upload: messages?.upload ?? defaultCoreMessages.upload,
 		frameCapture: messages?.frameCapture ?? defaultCoreMessages.frameCapture,
 		validationFailed:
 			messages?.validationFailed ?? defaultCoreMessages.validationFailed,
@@ -138,9 +169,43 @@ export function useMultiVideoCore(
 	const watchedVideos = adapter.videos;
 	const deletedVideoIds = adapter.deletedVideoIds;
 
-	// tempId ごとに最後に発火した操作の連番。await 復帰後に
-	// 自分の epoch が最新でなければ commit を破棄し、完了順逆転を防ぐ。
-	const epochsRef = useRef(new Map<string, number>());
+	const recordsRef = useRef<ReadonlyMap<string, UploadRecord>>(new Map());
+	const [records, setRecordsState] = useState<
+		ReadonlyMap<string, UploadRecord>
+	>(recordsRef.current);
+
+	/** mutate は変更があったかを返す。false なら再レンダーを起こさない */
+	const writeRecords = useCallback(
+		(mutate: (draft: Map<string, UploadRecord>) => boolean) => {
+			const draft = new Map(recordsRef.current);
+			if (!mutate(draft)) return;
+			recordsRef.current = draft;
+			setRecordsState(draft);
+		},
+		[],
+	);
+
+	// 進捗は台帳と別に持つ。UploadRecord を差し替えて表現すると、書き戻しの可否を
+	// 判定している「自分がまだ現行レコードか」の参照比較（startUpload の isCurrent）が
+	// 進捗報告のたびに崩れる
+	const progressRef = useRef<ReadonlyMap<string, number>>(new Map());
+	const [progress, setProgressState] = useState<ReadonlyMap<string, number>>(
+		progressRef.current,
+	);
+
+	const writeProgress = useCallback(
+		(key: string, fraction: number | undefined) => {
+			const draft = new Map(progressRef.current);
+			if (fraction === undefined) {
+				if (!draft.delete(key)) return;
+			} else {
+				draft.set(key, fraction);
+			}
+			progressRef.current = draft;
+			setProgressState(draft);
+		},
+		[],
+	);
 
 	// 参照カウント: 同一 tempId に対する並行操作（fileChange + thumbnailFromFile 等）で
 	// 先に終わった操作の finally が pending を消さないようにする
@@ -207,7 +272,7 @@ export function useMultiVideoCore(
 		async (
 			file: File,
 			processFn: ProcessFileFn | undefined,
-			errorType: MultiVideoErrorType,
+			errorType: Exclude<MultiVideoErrorType, "upload">,
 			errorMessage: () => string,
 		): Promise<File | null> => {
 			if (!processFn) return file;
@@ -225,76 +290,212 @@ export function useMultiVideoCore(
 		[],
 	);
 
-	const executeUploadFile = useCallback(
-		async (
-			file: File,
-			errorMessage: () => string,
-		): Promise<{ uploadRef: string } | "skip" | "error"> => {
-			const fn = uploadOnSelectRef.current?.uploadFile;
-			if (!fn) return "skip";
-			try {
-				const result = await fn(file);
-				return { uploadRef: result.uploadRef };
-			} catch (err) {
-				onErrorRef.current?.({
-					type: "upload_file",
-					message: errorMessage(),
-					cause: err,
-				});
-				return "error";
-			}
-		},
-		[],
-	);
-
-	const executeUploadThumbnailFile = useCallback(
-		async (
-			file: File,
-			errorMessage: () => string,
-		): Promise<{ uploadRef: string } | "skip" | "error"> => {
-			const fn = uploadOnSelectRef.current?.uploadThumbnailFile;
-			if (!fn) return "skip";
-			try {
-				const result = await fn(file);
-				return { uploadRef: result.uploadRef };
-			} catch (err) {
-				onErrorRef.current?.({
-					type: "upload_thumbnail_file",
-					message: errorMessage(),
-					cause: err,
-				});
-				return "error";
-			}
-		},
-		[],
-	);
-
 	const appendDeletedId = useCallback((id: string) => {
 		const next = [...adapterRef.current.getDeletedVideoIds(), id];
 		adapterRef.current.setDeletedVideoIds(next);
 	}, []);
 
-	const bumpEpoch = useCallback((tempId: string) => {
-		const epoch = (epochsRef.current.get(tempId) ?? 0) + 1;
-		epochsRef.current.set(tempId, epoch);
-		return epoch;
-	}, []);
-
-	const isEpochStale = useCallback(
-		(tempId: string, epoch: number) => epochsRef.current.get(tempId) !== epoch,
+	const findIndexByTempId = useCallback(
+		(tempId: string): number | undefined => {
+			const index = adapterRef.current
+				.getVideos()
+				.findIndex((vid) => vid.tempId === tempId);
+			return index === -1 ? undefined : index;
+		},
 		[],
+	);
+
+	const checkMaxVideos = useCallback((): boolean => {
+		if (
+			maxVideos !== undefined &&
+			adapterRef.current.getVideos().length >= maxVideos
+		) {
+			onErrorRef.current?.({
+				type: "max_videos",
+				message: msgRef.current.maxVideos(maxVideos),
+			});
+			return false;
+		}
+		return true;
+	}, [maxVideos]);
+
+	/**
+	 * 転送を開始する。完了を待たず即座に戻る。
+	 *
+	 * `source.token` には「フォーム state に格納したのと同一のオブジェクト」を渡すこと
+	 * （`UploadSource` の doc を参照）。加工前の File を渡すと、書き戻し時の同一性比較が
+	 * 常に不成立となり結果が一度も反映されない。
+	 */
+	const startUpload = useCallback(
+		(tempId: string, kind: UploadKind, source: UploadSource): void => {
+			const upload = uploadFileRef.current;
+			if (!upload) return;
+
+			const key = slotKey(tempId, kind);
+			const current = recordsRef.current.get(key);
+			// 同一トークンの転送が走行中なら二重発行しない。abort 済みでも settle 前は
+			// 走行中として扱う。中断要求から settle までの間に再発行すると、中断待ちの
+			// 転送と新しい転送が並走する
+			if (current?.status === "pending" && current.token === source.token) {
+				return;
+			}
+			// 同じスロットで別トークンの転送が走っている場合、その結果は書き戻し時に
+			// 破棄されるが、転送を続ける理由も無いので中断する
+			if (current?.status === "pending") current.controller.abort();
+
+			const controller = new AbortController();
+			let settle!: () => void;
+			const settled = new Promise<void>((resolve) => {
+				settle = resolve;
+			});
+			// 以降の書き込みは「台帳のエントリがまだ自分のものか」で判定する。
+			// 差し替え・削除で置き換わっていれば書き込まない
+			const record: UploadRecord = {
+				status: "pending",
+				tempId,
+				kind,
+				token: source.token,
+				controller,
+				settled,
+			};
+			const isCurrent = () => recordsRef.current.get(key) === record;
+
+			const fail = (error: unknown) => {
+				writeRecords((draft) => {
+					if (draft.get(key) !== record) return false;
+					draft.set(key, {
+						status: "failed",
+						tempId,
+						kind,
+						token: source.token,
+						error,
+					});
+					return true;
+				});
+				onErrorRef.current?.({
+					type: "upload",
+					kind,
+					message: msgRef.current.upload(kind),
+					cause: error,
+				});
+			};
+
+			// 進捗イベントはチャンクごとに飛びうる。台帳へそのまま書くと 1 チャンク
+			// ごとに再レンダーが走るため、表示が変わらない報告は捨てる。
+			// 丸めるのは書き込みの判定だけで、保持する値は報告されたまま
+			let lastPercent = -1;
+			const onProgress = (fraction: number): void => {
+				if (!Number.isFinite(fraction) || !isCurrent()) return;
+				const clamped = Math.min(1, Math.max(0, fraction));
+				const percent = Math.floor(clamped * 100);
+				if (percent === lastPercent) return;
+				lastPercent = percent;
+				writeProgress(key, clamped);
+			};
+
+			const run = async (): Promise<void> => {
+				try {
+					const result = await upload(source.file, {
+						kind,
+						signal: controller.signal,
+						onProgress,
+					});
+					if (controller.signal.aborted || !isCurrent()) return;
+					// resolve したのに参照が無い実装（API レスポンスの欠損など）を成功として
+					// 扱うと、転送済みなのに未解決の項目が残り再発行が走り続ける。
+					// 契約違反は失敗に倒して retry へ回す
+					if (
+						typeof result?.uploadRef !== "string" ||
+						result.uploadRef === ""
+					) {
+						throw new Error("uploadFile resolved without uploadRef");
+					}
+
+					const ad = adapterRef.current;
+					const videos = ad.getVideos();
+					const index = videos.findIndex((vid) => vid.tempId === tempId);
+					if (index === -1) return;
+					// 差し替えは tempId を保つため、index の再解決だけでは対象の入れ替わりを
+					// 検出できない。転送したオブジェクトとの同一性で判定する
+					const applied = applyUploadRef(
+						videos[index],
+						kind,
+						source.token,
+						result.uploadRef,
+					);
+					if (applied === undefined) return;
+
+					const next = [...videos];
+					next[index] = applied;
+					ad.setVideos(next);
+
+					writeRecords((draft) => {
+						if (draft.get(key) !== record) return false;
+						draft.set(key, {
+							status: "done",
+							tempId,
+							kind,
+							token: source.token,
+							uploadRef: result.uploadRef,
+						});
+						return true;
+					});
+				} catch (err) {
+					if (controller.signal.aborted) return;
+					fail(err);
+				} finally {
+					// 中断・破棄で早期 return した場合は pending のまま残る。
+					// 台帳から落として待機対象から外す
+					writeRecords((draft) =>
+						draft.get(key) === record ? draft.delete(key) : false,
+					);
+					// 進捗は転送 1 本の寿命に閉じる。ただし別の転送に引き継がれていたら
+					// 消さない。消すと後発の転送が報告済みの進捗が巻き戻る
+					const latest = recordsRef.current.get(key);
+					if (!(latest?.status === "pending" && latest !== record)) {
+						writeProgress(key, undefined);
+					}
+					settle();
+				}
+			};
+
+			// run() は同期 throw する uploadFile 実装で catch まで同期到達しうるため、
+			// 台帳へ載せてから起動する
+			writeRecords((draft) => {
+				draft.set(key, record);
+				return true;
+			});
+			writeProgress(key, undefined);
+			void run();
+		},
+		[writeProgress, writeRecords],
+	);
+
+	/** その項目のスロットに転送すべきものがあれば転送を起動する */
+	const startUploadFor = useCallback(
+		(video: Video, kind: UploadKind): void => {
+			const source = readUploadSource(video, kind);
+			if (source === undefined) return;
+			startUpload(video.tempId, kind, source);
+		},
+		[startUpload],
+	);
+
+	/** そのスロットの転送を中断し、台帳から落とす */
+	const discardSlot = useCallback(
+		(tempId: string, kind: UploadKind): void => {
+			const key = slotKey(tempId, kind);
+			const rec = recordsRef.current.get(key);
+			if (rec?.status === "pending") rec.controller.abort();
+			writeRecords((draft) => draft.delete(key));
+			writeProgress(key, undefined);
+		},
+		[writeProgress, writeRecords],
 	);
 
 	const handleAdd = useCallback(
 		async (file: File): Promise<boolean> => {
-			const currentVideos = adapterRef.current.getVideos();
-			if (maxVideos !== undefined && currentVideos.length >= maxVideos) {
-				onErrorRef.current?.({
-					type: "max_videos",
-					message: msgRef.current.maxVideos(maxVideos),
-				});
-				return false;
-			}
+			if (!checkMaxVideos()) return false;
 
 			incrementAdding();
 			try {
@@ -306,30 +507,15 @@ export function useMultiVideoCore(
 				);
 				if (!processedFile) return false;
 
-				const uploadResult = await executeUploadFile(
-					processedFile,
-					msgRef.current.uploadFile,
-				);
-				if (uploadResult === "error") return false;
-				const uploadRef =
-					uploadResult === "skip" ? undefined : uploadResult.uploadRef;
+				// await 中に並行 add が挿入を終えている可能性があるため、
+				// 挿入直前の状態で上限を再チェックする
+				if (!checkMaxVideos()) return false;
 
+				const newVideo = VideoUtils.createNew(generateTempId(), processedFile);
 				const ad = adapterRef.current;
-				const result = ops.addVideo(
-					ad.getVideos(),
-					processedFile,
-					maxVideos,
-					uploadRef,
-				);
-				if (!result.added) {
-					if (uploadRef) notifyOrphan(uploadRef);
-					onErrorRef.current?.({
-						type: "max_videos",
-						message: msgRef.current.maxVideos(maxVideos as number),
-					});
-					return false;
-				}
-				ad.setVideos(result.videos);
+				ad.setVideos(ops.addVideo(ad.getVideos(), newVideo).videos);
+
+				startUploadFor(newVideo, UploadKind.Video);
 
 				await safeValidate();
 				return true;
@@ -338,30 +524,21 @@ export function useMultiVideoCore(
 			}
 		},
 		[
+			checkMaxVideos,
 			decrementAdding,
 			executeProcess,
-			executeUploadFile,
 			incrementAdding,
-			maxVideos,
-			notifyOrphan,
 			processFile,
 			safeValidate,
+			startUploadFor,
 		],
 	);
 
 	const handleFileChange = useCallback(
 		async (tempId: string, file: File): Promise<boolean> => {
-			if (
-				adapterRef.current
-					.getVideos()
-					.findIndex((vid) => vid.tempId === tempId) === -1
-			) {
-				return false;
-			}
+			if (findIndexByTempId(tempId) === undefined) return false;
 
-			const epoch = bumpEpoch(tempId);
 			addPending(tempId);
-
 			try {
 				const processedFile = await executeProcess(
 					file,
@@ -369,39 +546,21 @@ export function useMultiVideoCore(
 					"process_file",
 					msgRef.current.processFile,
 				);
-				if (isEpochStale(tempId, epoch)) return false;
 				if (!processedFile) return false;
 
-				const uploadResult = await executeUploadFile(
-					processedFile,
-					msgRef.current.uploadFile,
-				);
-				if (isEpochStale(tempId, epoch)) {
-					if (uploadResult !== "error" && uploadResult !== "skip") {
-						notifyOrphan(uploadResult.uploadRef);
-					}
-					return false;
-				}
-				if (uploadResult === "error") return false;
-
-				const uploadRef =
-					uploadResult === "skip" ? undefined : uploadResult.uploadRef;
-
+				// await 中に並行操作で削除・移動されている可能性があるため、
+				// 対象は tempId から再解決する（ops.changeFile が行う）
 				const ad = adapterRef.current;
-				const result = ops.changeFile(
-					ad.getVideos(),
-					tempId,
-					processedFile,
-					uploadRef,
-				);
-				if (!result.changed) {
-					if (uploadRef) notifyOrphan(uploadRef);
-					return false;
-				}
+				const result = ops.changeFile(ad.getVideos(), tempId, processedFile);
+				if (result.video === null) return false;
 				ad.setVideos(result.videos);
 				if (result.deletedId !== null) {
 					appendDeletedId(result.deletedId);
+					// 既存動画の差し替えでサムネイルは捨てられる。台帳を残すと、
+					// 対象を失った転送の破棄が孤児回収まわりの経路に回る
+					discardSlot(tempId, UploadKind.Thumbnail);
 				}
+				startUploadFor(result.video, UploadKind.Video);
 
 				await safeValidate();
 				return true;
@@ -412,21 +571,18 @@ export function useMultiVideoCore(
 		[
 			addPending,
 			appendDeletedId,
-			bumpEpoch,
+			discardSlot,
 			executeProcess,
-			executeUploadFile,
-			isEpochStale,
-			notifyOrphan,
+			findIndexByTempId,
 			processFile,
 			removePending,
 			safeValidate,
+			startUploadFor,
 		],
 	);
 
 	const handleDelete = useCallback(
 		async (tempId: string): Promise<boolean> => {
-			bumpEpoch(tempId);
-
 			const ad = adapterRef.current;
 			const result = ops.deleteVideo(ad.getVideos(), tempId);
 			if (!result.deleted) return false;
@@ -434,11 +590,14 @@ export function useMultiVideoCore(
 			if (result.deletedId !== null) {
 				appendDeletedId(result.deletedId);
 			}
+			// 項目が消える唯一の経路。台帳を残すと、削除した項目の失敗が
+			// uploads.failed に残り続け、消費側は items で引けず retry でも消せない
+			for (const kind of UPLOAD_KINDS) discardSlot(tempId, kind);
 
 			await safeValidate();
 			return true;
 		},
-		[appendDeletedId, bumpEpoch, safeValidate],
+		[appendDeletedId, discardSlot, safeValidate],
 	);
 
 	const handleMoveUp = useCallback(
@@ -478,12 +637,12 @@ export function useMultiVideoCore(
 	);
 
 	const updateThumbnail = useCallback(
-		(tempId: string, thumbnail: Thumbnail | null): boolean => {
+		(tempId: string, thumbnail: Thumbnail | null): Video | null => {
 			const ad = adapterRef.current;
 			const result = ops.setThumbnail(ad.getVideos(), tempId, thumbnail);
-			if (!result.updated) return false;
+			if (result.video === null) return null;
 			ad.setVideos(result.videos);
-			return true;
+			return result.video;
 		},
 		[],
 	);
@@ -493,43 +652,16 @@ export function useMultiVideoCore(
 			tempId: string,
 			videoElement: HTMLVideoElement,
 		): Promise<boolean> => {
-			if (
-				adapterRef.current
-					.getVideos()
-					.findIndex((vid) => vid.tempId === tempId) === -1
-			) {
-				return false;
-			}
+			if (findIndexByTempId(tempId) === undefined) return false;
 
-			const epoch = bumpEpoch(tempId);
 			addPending(tempId);
-
 			try {
 				const captured = await ThumbnailUtils.captureFrame(videoElement);
-				if (isEpochStale(tempId, epoch)) return false;
+				const updated = updateThumbnail(tempId, captured);
+				if (updated === null) return false;
 
-				const file = new File([captured.blob], "thumbnail.jpg", {
-					type: "image/jpeg",
-				});
-				const uploadResult = await executeUploadThumbnailFile(
-					file,
-					msgRef.current.uploadThumbnailFile,
-				);
-				if (isEpochStale(tempId, epoch)) {
-					if (uploadResult !== "error" && uploadResult !== "skip") {
-						notifyOrphan(uploadResult.uploadRef);
-					}
-					return false;
-				}
-				if (uploadResult === "error") return false;
-				const uploadRef =
-					uploadResult === "skip" ? undefined : uploadResult.uploadRef;
+				startUploadFor(updated, UploadKind.Thumbnail);
 
-				const thumbnail = { ...captured, uploadRef };
-				if (!updateThumbnail(tempId, thumbnail)) {
-					if (uploadRef) notifyOrphan(uploadRef);
-					return false;
-				}
 				await safeValidate();
 				return true;
 			} catch (err) {
@@ -545,29 +677,19 @@ export function useMultiVideoCore(
 		},
 		[
 			addPending,
-			bumpEpoch,
-			executeUploadThumbnailFile,
-			isEpochStale,
-			notifyOrphan,
+			findIndexByTempId,
 			removePending,
 			safeValidate,
+			startUploadFor,
 			updateThumbnail,
 		],
 	);
 
 	const handleSetThumbnailFromFile = useCallback(
 		async (tempId: string, file: File): Promise<boolean> => {
-			if (
-				adapterRef.current
-					.getVideos()
-					.findIndex((vid) => vid.tempId === tempId) === -1
-			) {
-				return false;
-			}
+			if (findIndexByTempId(tempId) === undefined) return false;
 
-			const epoch = bumpEpoch(tempId);
 			addPending(tempId);
-
 			try {
 				const processedFile = await executeProcess(
 					file,
@@ -575,31 +697,15 @@ export function useMultiVideoCore(
 					"process_thumbnail_file",
 					msgRef.current.processThumbnailFile,
 				);
-				if (isEpochStale(tempId, epoch)) return false;
 				if (!processedFile) return false;
 
-				const uploadResult = await executeUploadThumbnailFile(
-					processedFile,
-					msgRef.current.uploadThumbnailFile,
+				const updated = updateThumbnail(
+					tempId,
+					ThumbnailUtils.fromFile(processedFile),
 				);
-				if (isEpochStale(tempId, epoch)) {
-					if (uploadResult !== "error" && uploadResult !== "skip") {
-						notifyOrphan(uploadResult.uploadRef);
-					}
-					return false;
-				}
-				if (uploadResult === "error") return false;
-				const uploadRef =
-					uploadResult === "skip" ? undefined : uploadResult.uploadRef;
+				if (updated === null) return false;
 
-				const thumbnail = {
-					...ThumbnailUtils.fromFile(processedFile),
-					uploadRef,
-				};
-				if (!updateThumbnail(tempId, thumbnail)) {
-					if (uploadRef) notifyOrphan(uploadRef);
-					return false;
-				}
+				startUploadFor(updated, UploadKind.Thumbnail);
 
 				await safeValidate();
 				return true;
@@ -609,26 +715,24 @@ export function useMultiVideoCore(
 		},
 		[
 			addPending,
-			bumpEpoch,
 			executeProcess,
-			executeUploadThumbnailFile,
-			isEpochStale,
-			notifyOrphan,
+			findIndexByTempId,
 			processThumbnailFile,
 			removePending,
 			safeValidate,
+			startUploadFor,
 			updateThumbnail,
 		],
 	);
 
 	const handleRemoveThumbnail = useCallback(
 		async (tempId: string): Promise<boolean> => {
-			bumpEpoch(tempId);
-			if (!updateThumbnail(tempId, null)) return false;
+			if (updateThumbnail(tempId, null) === null) return false;
+			discardSlot(tempId, UploadKind.Thumbnail);
 			await safeValidate();
 			return true;
 		},
-		[bumpEpoch, safeValidate, updateThumbnail],
+		[discardSlot, safeValidate, updateThumbnail],
 	);
 
 	const handlers = useMemo<UseMultiVideoCoreHandlers>(
@@ -682,6 +786,76 @@ export function useMultiVideoCore(
 		return bound;
 	}, []);
 
+	const retry = useCallback(
+		(tempId: string): boolean => {
+			const video = adapterRef.current
+				.getVideos()
+				.find((vid) => vid.tempId === tempId);
+			if (video === undefined) return false;
+
+			let restarted = false;
+			for (const kind of UPLOAD_KINDS) {
+				// pending 中の再実行を許すと同一トークンの転送が 2 本 in-flight になり、
+				// 参照同一性比較では区別できず両方が書き戻しに成功する
+				const rec = recordsRef.current.get(slotKey(tempId, kind));
+				if (rec?.status !== "failed") continue;
+				const source = readUploadSource(video, kind);
+				if (source === undefined) continue;
+				startUpload(tempId, kind, source);
+				restarted = true;
+			}
+			return restarted;
+		},
+		[startUpload],
+	);
+
+	// unmount 時のみ中断する。結果は破棄される。
+	//
+	// 中断した転送は settle を待たずに台帳から落とす。abort した時点でその転送に
+	// 用は無いのに枠を占有させると、signal を無視する実装（settle が遅い・返らない）で
+	// StrictMode の再 mount 後に転送が再開されなくなる
+	useEffect(() => {
+		return () => {
+			writeRecords((draft) => {
+				let changed = false;
+				for (const [key, rec] of draft) {
+					if (rec.status !== "pending") continue;
+					rec.controller.abort();
+					draft.delete(key);
+					changed = true;
+				}
+				return changed;
+			});
+		};
+	}, [writeRecords]);
+
+	const uploads = useMemo<UploadsApi>(() => {
+		const pending = new Set<string>();
+		const failed = new Set<string>();
+		for (const rec of records.values()) {
+			if (rec.status === "pending") pending.add(rec.tempId);
+			if (rec.status === "failed") failed.add(rec.tempId);
+		}
+		return { pending: [...pending], failed: [...failed], retry };
+	}, [records, retry]);
+
+	// done は公開しない（UploadState の doc を参照）。転送していないスロットの
+	// キーも作らないので、両スロットとも報告が無い項目は空オブジェクトになる
+	const uploadStates = useMemo(() => {
+		const byTempId = new Map<string, VideoUploadState>();
+		for (const [key, rec] of records) {
+			if (rec.status === "done") continue;
+			const state: UploadState =
+				rec.status === "pending"
+					? { status: "pending", progress: progress.get(key) }
+					: { status: "failed", error: rec.error };
+			const entry = byTempId.get(rec.tempId) ?? {};
+			entry[rec.kind] = state;
+			byTempId.set(rec.tempId, entry);
+		}
+		return byTempId;
+	}, [records, progress]);
+
 	const items = useMemo<VideoItem[]>(() => {
 		const lastIndex = watchedVideos.length - 1;
 		const activeTempIds = new Set<string>();
@@ -695,6 +869,7 @@ export function useMultiVideoCore(
 				canMoveDown: index < lastIndex,
 				errorMessages: collectErrorMessages(errors),
 				isPending: pendingOperations.has(vid.tempId),
+				uploadState: uploadStates.get(vid.tempId) ?? {},
 				handlers: getItemHandlers(vid.tempId),
 			};
 		});
@@ -704,7 +879,13 @@ export function useMultiVideoCore(
 			}
 		}
 		return mapped;
-	}, [watchedVideos, adapter.errors, pendingOperations, getItemHandlers]);
+	}, [
+		watchedVideos,
+		adapter.errors,
+		pendingOperations,
+		uploadStates,
+		getItemHandlers,
+	]);
 
 	const isBusy = isAdding || pendingOperations.size > 0;
 
@@ -731,6 +912,7 @@ export function useMultiVideoCore(
 		pendingOperations,
 		isAdding,
 		isBusy,
+		uploads,
 		prepareForSubmit: boundPrepareForSubmit,
 	};
 }

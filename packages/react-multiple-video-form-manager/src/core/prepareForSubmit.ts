@@ -1,6 +1,8 @@
 import type { Thumbnail, ThumbnailForSubmit } from "./types/Thumbnail";
 import { ThumbnailSource, ThumbnailSubmitStatus } from "./types/Thumbnail";
-import type { UploadHandlers, Video, VideoForSubmitNew } from "./types/Video";
+import type { UploadFileContext, UploadFileFn } from "./types/Upload";
+import { UploadKind } from "./types/Upload";
+import type { Video, VideoForSubmitNew } from "./types/Video";
 import { VideoUtils } from "./types/Video";
 import type { VideoFormStatus } from "./types/VideoStatus";
 import { VideoFormStatus as VideoFormStatusValue } from "./types/VideoStatus";
@@ -32,12 +34,8 @@ export type ResolvedVideoForSubmit = {
 	thumbnail: ResolvedThumbnailForSubmit | null;
 };
 
-// prepareForSubmit は orphan（アップロード済みだが未使用になった転送参照） を
-// PrepareForSubmitError.successfulUploadRefs 経由でのみ通知する。
-// UploadOnSelectOptions をそのまま渡すと onOrphanedUpload は黙って無視されるため、
-// never で禁止しコンパイルエラーとして早期検出する。
-export type PrepareForSubmitOptions = UploadHandlers & {
-	onOrphanedUpload?: never;
+export type PrepareForSubmitOptions = {
+	uploadFile?: UploadFileFn;
 };
 
 export type PrepareForSubmitResult = {
@@ -48,10 +46,11 @@ export type PrepareForSubmitResult = {
 /**
  * Resolve all video/thumbnail state into a server-ready payload. Call in your submit handler.
  *
- * When `uploadFile` / `uploadThumbnailFile` are provided in `options`,
- * pending files are uploaded inside this call before the result is returned.
- * Calling with no arguments assumes every new item already carries `uploadRef`
- * (e.g. via upload-on-select); missing ones reject with {@link PrepareForSubmitError}.
+ * When `uploadFile` is provided in `options`, pending files (videos and
+ * thumbnails alike, told apart by `ctx.kind`) are uploaded inside this call
+ * before the result is returned. Calling with no arguments assumes every new item
+ * already carries `uploadRef`; missing ones reject with
+ * {@link PrepareForSubmitError}.
  */
 export type PrepareForSubmitFn = (
 	options?: PrepareForSubmitOptions,
@@ -111,9 +110,8 @@ async function settledUpload<T>(
 /**
  * Resolve all video/thumbnail state into a server-ready payload.
  *
- * When `uploadFile` / `uploadThumbnailFile` are provided in `options`,
- * this method uploads all pending files internally before returning.
- * Items that already carry an upload reference (e.g. via upload-on-select)
+ * When `uploadFile` is provided in `options`, this method uploads all pending
+ * files internally before returning. Items that already carry an upload reference
  * are skipped, so mixing both strategies is safe.
  *
  * On failure the thrown {@link PrepareForSubmitError} carries
@@ -124,7 +122,13 @@ export async function prepareForSubmit(
 	deletedIds: readonly string[],
 	options: PrepareForSubmitOptions = {},
 ): Promise<PrepareForSubmitResult> {
-	const { uploadFile, uploadThumbnailFile } = options;
+	const { uploadFile } = options;
+	// この経路には中断要求の出し手も進捗の受け手も居ないため、ctx は形だけ満たす
+	const uploadContext = (kind: UploadKind): UploadFileContext => ({
+		kind,
+		signal: new AbortController().signal,
+		onProgress: () => {},
+	});
 
 	const videosForSubmit = VideoUtils.computeVideosForSubmit(videos);
 	const thumbnailStatuses = videosForSubmit.map((vid) => ({
@@ -154,7 +158,10 @@ export async function prepareForSubmit(
 			const { results, successfulRefs } = await settledUpload(
 				toUpload,
 				async (vid) => {
-					const result = await uploadFile(vid.file);
+					const result = await uploadFile(
+						vid.file,
+						uploadContext(UploadKind.Video),
+					);
 					return { tempId: vid.tempId, uploadRef: result.uploadRef };
 				},
 			);
@@ -178,7 +185,7 @@ export async function prepareForSubmit(
 			}
 		}
 
-		if (uploadThumbnailFile) {
+		if (uploadFile) {
 			const toUpload = thumbnailStatuses.filter(
 				({ tempId, thumbnailForSubmit: t }) =>
 					t !== null &&
@@ -192,7 +199,10 @@ export async function prepareForSubmit(
 					const file = extractThumbnailFile(
 						(t as { thumbnail: Thumbnail }).thumbnail,
 					);
-					const result = await uploadThumbnailFile(file);
+					const result = await uploadFile(
+						file,
+						uploadContext(UploadKind.Thumbnail),
+					);
 					return { tempId, uploadRef: result.uploadRef };
 				},
 			);
@@ -208,7 +218,7 @@ export async function prepareForSubmit(
 				videoUploadMap.get(vid.tempId) ?? resolveVideoRef(vid);
 			if (!uploadedUrl) {
 				throw new PrepareForSubmitError(
-					`Missing uploadRef for video ${vid.tempId}. Pass uploadFile to prepareForSubmit or set uploadOnSelect on the controller.`,
+					`Missing uploadRef for video ${vid.tempId}. Pass uploadFile to prepareForSubmit or to the controller.`,
 					allSuccessfulRefs,
 				);
 			}
@@ -259,7 +269,7 @@ function resolveThumbnail(
 			const uploadedUrl = resolvedUploadedUrl ?? t.thumbnail.uploadRef;
 			if (!uploadedUrl) {
 				throw new PrepareForSubmitError(
-					`Missing uploadRef for thumbnail of video ${tempId}. Pass uploadThumbnailFile to prepareForSubmit or set uploadOnSelect on the controller.`,
+					`Missing uploadRef for thumbnail of video ${tempId}. Pass uploadFile to prepareForSubmit or to the controller.`,
 					allSuccessfulRefs,
 				);
 			}
