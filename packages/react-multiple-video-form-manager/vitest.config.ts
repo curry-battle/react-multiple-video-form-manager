@@ -9,6 +9,9 @@ export default defineConfig({
 		browser: {
 			enabled: true,
 			provider: playwright(),
+			// ローカルでは既定が headed で、テストを走らせるたびにウィンドウが前面に出る。
+			// ブラウザを見たいときは `--browser.headless=false` を付ける
+			headless: true,
 			instances: [{ browser: "chromium" }],
 		},
 		coverage: {
