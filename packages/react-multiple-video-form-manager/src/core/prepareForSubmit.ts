@@ -68,7 +68,6 @@ export class PrepareForSubmitError extends Error {
 
 // --- Implementation ---
 
-// 新規は転送参照、既存はサーバ由来の URL と供給源が分かれる（ResolvedThumbnailForSubmit と同じ理由で 1 本に畳む）
 function resolveVideoRef(video: Video): string | undefined {
 	return video.status === VideoFormStatusValue.New
 		? video.uploadRef
@@ -84,7 +83,7 @@ function extractThumbnailFile(thumbnail: Thumbnail): File {
 
 type UploadResult = { tempId: string; uploadRef: string };
 
-// allSettled で全完了を待ち、成功した転送参照を漏れなく収集してから失敗があれば throw
+// allSettled で待つのは、途中で失敗しても成功済みの転送参照を回収して呼び出し側の後始末に渡すため
 async function settledUpload<T>(
 	items: T[],
 	fn: (item: T) => Promise<UploadResult>,

@@ -140,8 +140,7 @@ describe("cross-parity: Zod and Valibot schemas produce identical results", () =
 		expect(zodResult.success).toBe(valibotResult.success);
 	});
 
-	// 型不一致でも項目内のキーまで指すこと。union だと「どのブランチにも合致しない」と畳まれ、
-	// 正規化しても items[tempId].<key> に届かなくなる（zod.ts / valibot.ts の videoUnion 参照）
+	// 型不一致でも issue が項目内のキーまで指すこと（判別が要る理由は zod.ts の videoUnion）
 	describe("issue path parity", () => {
 		const pathCases: [string, unknown, string][] = [
 			[

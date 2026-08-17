@@ -95,7 +95,6 @@ export const validNewVideoWithUploadRef = {
 	thumbnail: null,
 };
 
-// 転送先はキーやトークンを返すこともあるため、uploadRef は URL 形式を要求しない
 export const validNewVideoWithOpaqueUploadRef = {
 	tempId: "temp_opaque_ref",
 	status: "new" as const,

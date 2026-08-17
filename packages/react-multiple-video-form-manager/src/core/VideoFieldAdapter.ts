@@ -13,7 +13,8 @@ import type { VideosError } from "./types/VideoSchemaTypes";
  * 毎レンダー変わると object URL の生成と revoke が繰り返される。
  *
  * **`getVideos()` / `getDeletedVideoIds()` は read 間で参照安定であること。**
- * read のたびに新しい配列や新しい `File` を作って返してはならない。理由は上と同じ。
+ * read のたびに新しい配列や新しい `File` を作って返してはならない
+ * （参照が変わることの影響は File / Blob の参照保持と同じ）。
  *
  * **`setVideos` / `setDeletedVideoIds` の結果は、次に `getVideos()` /
  * `getDeletedVideoIds()` を読む時点で見えていること**（read-your-writes）。
