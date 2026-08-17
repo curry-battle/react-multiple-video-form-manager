@@ -1,4 +1,4 @@
-import type { FieldApi, ReactFormExtendedApi } from "@tanstack/react-form";
+import type { ReactFormExtendedApi } from "@tanstack/react-form";
 import { useStore } from "@tanstack/react-form";
 import { useCallback, useMemo } from "react";
 import type { Video } from "../core/types/Video";
@@ -21,32 +21,6 @@ export type AnyTanstackFormApi<TFormData> = ReactFormExtendedApi<
 	any
 >;
 
-export type AnyTanstackFieldApi<TFormData, TName extends string> = FieldApi<
-	TFormData,
-	TName,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any,
-	any
->;
-
 export type ValidateCause = "change" | "blur" | "submit" | "server";
 
 export type UseTanstackVideoFieldAdapterParams<
@@ -55,7 +29,6 @@ export type UseTanstackVideoFieldAdapterParams<
 	TFormData extends FormWithVideoField<TFieldName, TDeletedFieldName>,
 > = {
 	form: AnyTanstackFormApi<TFormData>;
-	field: AnyTanstackFieldApi<TFormData, TFieldName>;
 	name: TFieldName;
 	deletedName: TDeletedFieldName;
 	validateCause?: ValidateCause;
@@ -65,6 +38,31 @@ const EMPTY_VIDEOS: readonly Video[] = Object.freeze([]);
 const EMPTY_DELETED_IDS: readonly string[] = Object.freeze([]);
 const EMPTY_META_ERRORS: readonly unknown[] = Object.freeze([]);
 
+/**
+ * ストアを素のキーアクセスで読む一方 `setFieldValue` / `validateField` は
+ * TanStack のパス解決に載るため、ネストパスを渡すと read と write が別の場所を指す。
+ * TanStack のパス構文はドットと角括弧の 2 種類なので両方を弾く。
+ */
+function assertTopLevelKey(label: string, key: string): void {
+	if (key.includes(".") || key.includes("[")) {
+		throw new Error(
+			`${label} must be a top-level key (got "${key}"). Nested paths are not supported.`,
+		);
+	}
+}
+
+/**
+ * TanStack Form を VideoFieldAdapter ポートに適合させる。
+ *
+ * read / write はすべてフォームストア経由なので、このフックはフォームレベルで
+ * 呼べる。`<form.Field mode="array">` の内側である必要はない
+ * — `FormApi.validateField` は field インスタンスが未登録ならフォームレベルの
+ * 検証へフォールバックし、`FormApi.setFieldValue` が `fieldMeta[name]` を
+ * 自前で生成するので、touched / dirty / フィールド単位のエラーは field 無しでも追える。
+ *
+ * `name` / `deletedName` はフォームデータのトップレベルキーであること。
+ * ストアはネストパス解決ではなく素のキーアクセスで読む。
+ */
 export function useVideoFieldAdapter<
 	TFieldName extends string,
 	TDeletedFieldName extends string,
@@ -76,21 +74,17 @@ export function useVideoFieldAdapter<
 		TFormData
 	>,
 ): VideoFieldAdapter {
-	const { form, field, name, deletedName, validateCause = "change" } = params;
+	const { form, name, deletedName, validateCause = "change" } = params;
 
-	if (deletedName.includes(".")) {
-		throw new Error(
-			`deletedName must be a top-level key (got "${deletedName}"). Nested paths are not supported.`,
-		);
-	}
+	assertTopLevelKey("name", name);
+	assertTopLevelKey("deletedName", deletedName);
 
-	const anyField = field as any;
 	const anyForm = form as any;
 
 	const videos = useStore(
-		anyField.store,
-		(s: { value?: Video[] }) =>
-			(s.value as Video[] | undefined) ?? (EMPTY_VIDEOS as Video[]),
+		anyForm.store,
+		(s: { values?: Record<string, unknown> }) =>
+			(s.values?.[name] as Video[] | undefined) ?? (EMPTY_VIDEOS as Video[]),
 	);
 
 	const deletedVideoIds = useStore(
@@ -102,9 +96,9 @@ export function useVideoFieldAdapter<
 	);
 
 	const metaErrors = useStore(
-		anyField.store,
-		(s: { meta?: { errors?: unknown[] } }) =>
-			s.meta?.errors ?? (EMPTY_META_ERRORS as unknown[]),
+		anyForm.store,
+		(s: { fieldMeta?: Record<string, { errors?: unknown[] } | undefined> }) =>
+			s.fieldMeta?.[name]?.errors ?? (EMPTY_META_ERRORS as unknown[]),
 	);
 	const errorMap = useStore(
 		anyForm.store,

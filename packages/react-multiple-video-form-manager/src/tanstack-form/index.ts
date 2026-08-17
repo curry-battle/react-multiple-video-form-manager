@@ -8,7 +8,6 @@ export {
 	useMultiVideoController,
 } from "./useMultiVideoController";
 export {
-	type AnyTanstackFieldApi,
 	type AnyTanstackFormApi,
 	type UseTanstackVideoFieldAdapterParams,
 	useVideoFieldAdapter,

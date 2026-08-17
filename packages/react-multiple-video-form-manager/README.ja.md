@@ -155,7 +155,7 @@ function MyForm() {
 }
 ```
 
-TanStack アダプタの `MultiVideoController` は内部で `<form.Field mode="array">` を描画し、その children に渡される `field` を React コンポーネント内で消費します。これにより rules-of-hooks 違反を回避します。`useStore(form.store, ...)` / `useStore(field.store, ...)` で reactive subscription を組み、validate 直後に `items` / `rootErrors` が同期して更新されます。
+TanStack アダプタは read / write をすべてフォームストア経由で行うため（`useStore(form.store, ...)` で reactive subscription を組み、validate 直後に `items` / `rootErrors` が同期して更新されます）、`useMultiVideoController` はフォームレベルで呼べます。`<form.Field mode="array">` は不要です — field インスタンスが未登録なら `validateField` はフォームレベルの検証へフォールバックし、`setFieldValue` が `fieldMeta` を自前で生成します。submit ハンドラから `prepareForSubmit` を使いたい場合はフックを直接呼んでください（render props コンポーネントは render の内側に閉じ込めます）。`name` / `deletedName` はフォームデータのトップレベルキーである必要があります。
 
 両 subpath から同名 `MultiVideoController` を export しています。同一ファイルで両方を使う場合は import alias で区別してください:
 
