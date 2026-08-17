@@ -75,6 +75,12 @@ const videoFile = (name = "a.mp4") =>
 const thumbFile = (name = "t.jpg") =>
 	new File(["t"], name, { type: "image/jpeg" });
 
+/** 書き込まれた転送参照を捨てる契約違反の adapter を再現する */
+const stripUploadRef = (video: Video): Video =>
+	video.status === VideoFormStatus.New
+		? { ...video, uploadRef: undefined }
+		: video;
+
 /**
  * FakeVideoFieldAdapter。setVideos で配列全体を置き換える。
  *
@@ -83,7 +89,11 @@ const thumbFile = (name = "t.jpg") =>
  * - videos プロパティはレンダー時点のスナップショット (再レンダーまで stale)
  * - getVideos() はストアの同期 read (常に最新)
  */
-function useFakeAdapter(initial: Video[], errors?: VideosError) {
+function useFakeAdapter(
+	initial: Video[],
+	errors?: VideosError,
+	dropUploadRefs = false,
+) {
 	const [, force] = useState(0);
 	const videosRef = useRef<Video[]>(initial);
 	const deletedIdsRef = useRef<string[]>([]);
@@ -104,7 +114,7 @@ function useFakeAdapter(initial: Video[], errors?: VideosError) {
 	const adapter: VideoFieldAdapter = {
 		videos: videosSnapshot,
 		setVideos: (next) => {
-			videosRef.current = next;
+			videosRef.current = dropUploadRefs ? next.map(stripUploadRef) : next;
 			force((n) => n + 1);
 		},
 		getVideos: () => videosRef.current,
@@ -135,6 +145,7 @@ async function renderCore(
 		uploadFile?: UploadFileFn;
 		onError?: (error: unknown) => void;
 		messages?: CoreMessages;
+		dropUploadRefs?: boolean;
 	} = {},
 ) {
 	const ref: {
@@ -142,7 +153,11 @@ async function renderCore(
 		validate?: ReturnType<typeof vi.fn>;
 	} = {};
 	const rendered = await renderHook(() => {
-		const { adapter, validate } = useFakeAdapter(initial, options.errors);
+		const { adapter, validate } = useFakeAdapter(
+			initial,
+			options.errors,
+			options.dropUploadRefs,
+		);
 		ref.adapter = adapter;
 		ref.validate = validate;
 		return useMultiVideoCore({
@@ -1341,53 +1356,313 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		});
 	});
 
-	describe("prepareForSubmit(options) pass-through", () => {
-		it("render prop の prepareForSubmit(options) が options を core に素通しすること", async () => {
-			const nv = makeNewVideo({
-				tempId: "temp_submit",
-				uploadRef: undefined,
-			});
-			const { result } = await renderCore([nv]);
+	describe("uploads.wait", () => {
+		it("uploadFile 未設定なら待たずに素材を返す", async () => {
+			const nv = makeNewVideo({ tempId: "temp_local" });
+			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
+			const { result } = await renderCore([nv, ex]);
 
-			const uploadFile = vi.fn(async () => ({
-				uploadRef: "https://s3.example.com/on-submit.mp4",
-			}));
-
-			let resolved: Awaited<ReturnType<typeof result.current.prepareForSubmit>>;
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
 			await act(async () => {
-				resolved = await result.current.prepareForSubmit({ uploadFile });
+				waited = await result.current.uploads.wait();
 			});
 
-			expect(uploadFile).toHaveBeenCalledOnce();
-			expect(resolved!.videos[0].uploadedUrl).toBe(
-				"https://s3.example.com/on-submit.mp4",
-			);
+			expect(waited!.ok).toBe(true);
+			if (!waited!.ok) return;
+			expect(waited!.videos).toEqual([
+				{
+					status: VideoFormStatus.New,
+					file: nv.file,
+					tempId: "temp_local",
+					thumbnail: null,
+				},
+				{ status: VideoFormStatus.Existing, id: "id-ex", thumbnail: null },
+			]);
 		});
 
-		it("混在時: 転送済み項目は prepareForSubmit(options) で二重アップロードされない", async () => {
-			const alreadyUploaded = makeNewVideo({
-				tempId: "temp_already",
-				uploadRef: "https://s3.example.com/already.mp4",
-			});
-			const pending = makeNewVideo({
-				tempId: "temp_pending",
-				uploadRef: undefined,
-			});
-			const { result } = await renderCore([alreadyUploaded, pending]);
+		it("走行中の転送を待ってから素材を返す", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
 
-			const uploadFile = vi.fn(async () => ({
-				uploadRef: "https://s3.example.com/submitted.mp4",
-			}));
-
-			let resolved: Awaited<ReturnType<typeof result.current.prepareForSubmit>>;
 			await act(async () => {
-				resolved = await result.current.prepareForSubmit({ uploadFile });
+				await result.current.handlers.add(videoFile());
+			});
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				const waiting = result.current.uploads.wait();
+				calls[0].resolve({ uploadRef: "ref-video" });
+				waited = await waiting;
+			});
+
+			expect(waited!.ok).toBe(true);
+			if (!waited!.ok) return;
+			expect(waited!.videos).toEqual([
+				{
+					status: VideoFormStatus.New,
+					uploadRef: "ref-video",
+					thumbnail: null,
+				},
+			]);
+		});
+
+		it("未着手のスロットは wait が転送を発行して待つ", async () => {
+			const uploadFile = vi.fn(async () => ({ uploadRef: "ref-reissued" }));
+			// 転送ハンドラを設定しても、初期値の項目には転送が走っていない
+			const nv = makeNewVideo({ tempId: "temp_initial" });
+			const { result } = await renderCore([nv], { uploadFile });
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				waited = await result.current.uploads.wait();
 			});
 
 			expect(uploadFile).toHaveBeenCalledOnce();
-			const urls = resolved!.videos.map((v) => v.uploadedUrl);
-			expect(urls).toContain("https://s3.example.com/already.mp4");
-			expect(urls).toContain("https://s3.example.com/submitted.mp4");
+			expect(waited!.ok).toBe(true);
+			expect(firstVideo(result).uploadRef).toBe("ref-reissued");
+		});
+
+		it("本体が完了しサムネイルが走行中なら両方を待つ", async () => {
+			const { uploadFile, callsOf } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(tempId, thumbFile());
+			});
+			await act(async () => {
+				callsOf("video")[0].resolve({ uploadRef: "ref-video" });
+			});
+
+			let settled = false;
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				const waiting = result.current.uploads.wait().then((r) => {
+					settled = true;
+					return r;
+				});
+				await Promise.resolve();
+				expect(settled).toBe(false);
+				callsOf("thumbnail")[0].resolve({ uploadRef: "ref-thumb" });
+				waited = await waiting;
+			});
+
+			expect(waited!.ok).toBe(true);
+			if (!waited!.ok) return;
+			expect(waited!.videos[0]).toEqual({
+				status: VideoFormStatus.New,
+				uploadRef: "ref-video",
+				thumbnail: { status: "new", uploadRef: "ref-thumb" },
+			});
+		});
+
+		it("失敗したスロットがあれば ok:false + failedTempIds", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				calls[0].reject(new Error("boom"));
+			});
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				waited = await result.current.uploads.wait();
+			});
+
+			expect(waited!).toEqual({ ok: false, failedTempIds: [tempId] });
+			// 失敗済みは自動再試行しないので、転送は 1 回で止まる
+			expect(calls).toHaveLength(1);
+		});
+
+		it("フォームから消えた項目の転送が settle しなくても返る", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result, ref } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+
+			// handlers を介さずに項目を落とす（form.reset 相当）
+			await act(async () => {
+				ref.adapter?.setVideos([]);
+			});
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				waited = await result.current.uploads.wait();
+			});
+
+			expect(waited!).toEqual({ ok: true, videos: [], deletedIds: [] });
+			expect(calls[0].ctx.signal.aborted).toBe(false);
+		});
+
+		it("既存動画のサムネイル差し替えは replaced で運ばれる", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const ex = makeExistingVideo({
+				tempId: "temp_ex",
+				id: "id-ex",
+				thumbnail: {
+					source: ThumbnailSource.Existing,
+					uploadedUrl: "https://s3.example.com/old-thumb.jpg",
+				},
+			});
+			const { result } = await renderCore([ex], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(
+					"temp_ex",
+					thumbFile(),
+				);
+			});
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				const waiting = result.current.uploads.wait();
+				calls[0].resolve({ uploadRef: "ref-new-thumb" });
+				waited = await waiting;
+			});
+
+			expect(waited!.ok).toBe(true);
+			if (!waited!.ok) return;
+			expect(waited!.videos[0]).toEqual({
+				status: VideoFormStatus.Existing,
+				id: "id-ex",
+				thumbnail: { status: "replaced", uploadRef: "ref-new-thumb" },
+			});
+		});
+
+		it("サムネイル削除は removed で運ばれる", async () => {
+			const ex = makeExistingVideo({
+				tempId: "temp_ex",
+				id: "id-ex",
+				thumbnail: {
+					source: ThumbnailSource.Existing,
+					uploadedUrl: "https://s3.example.com/old-thumb.jpg",
+				},
+			});
+			const { result } = await renderCore([ex]);
+
+			await act(async () => {
+				await result.current.handlers.removeThumbnail("temp_ex");
+			});
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				waited = await result.current.uploads.wait();
+			});
+
+			expect(waited!.ok).toBe(true);
+			if (!waited!.ok) return;
+			expect(waited!.videos[0]).toEqual({
+				status: VideoFormStatus.Existing,
+				id: "id-ex",
+				thumbnail: { status: "removed" },
+			});
+		});
+
+		it("転送参照が反映されない adapter では収束を打ち切って失敗に倒す", async () => {
+			const uploadFile = vi.fn(async () => ({ uploadRef: "ref" }));
+			const nv = makeNewVideo({ tempId: "temp_stuck" });
+			const { result } = await renderCore([nv], {
+				uploadFile,
+				dropUploadRefs: true,
+			});
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				waited = await result.current.uploads.wait();
+			});
+
+			expect(waited!).toEqual({ ok: false, failedTempIds: ["temp_stuck"] });
+			// 台帳にも失敗として残す。返るだけだと消費側が retry できない
+			expect(result.current.uploads.failed).toEqual(["temp_stuck"]);
+		});
+
+		it("削除した既存動画の id は deletedIds に載る", async () => {
+			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
+			const { result } = await renderCore([ex]);
+
+			await act(async () => {
+				await result.current.handlers.delete("temp_ex");
+			});
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				waited = await result.current.uploads.wait();
+			});
+
+			expect(waited!).toEqual({
+				ok: true,
+				videos: [],
+				deletedIds: ["id-ex"],
+			});
+		});
+	});
+
+	describe("uploads.getReady", () => {
+		it("未完了のスロットを持つ項目を除外して excludedTempIds で返す", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
+			const { result } = await renderCore([ex], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			const pendingTempId = result.current.raw.videos[1].tempId;
+
+			const ready = result.current.uploads.getReady();
+
+			expect(ready.excludedTempIds).toEqual([pendingTempId]);
+			expect(ready.videos).toEqual([
+				{ status: VideoFormStatus.Existing, id: "id-ex", thumbnail: null },
+			]);
+
+			await act(async () => {
+				calls[0].resolve({ uploadRef: "ref-video" });
+			});
+
+			expect(result.current.uploads.getReady().excludedTempIds).toEqual([]);
+		});
+
+		it("サムネイルだけ転送中の項目も丸ごと除外される", async () => {
+			const { uploadFile, callsOf } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(tempId, thumbFile());
+			});
+			await act(async () => {
+				callsOf("video")[0].resolve({ uploadRef: "ref-video" });
+			});
+
+			const ready = result.current.uploads.getReady();
+
+			expect(ready.excludedTempIds).toEqual([tempId]);
+			expect(ready.videos).toEqual([]);
+		});
+
+		it("uploadFile 未設定なら新規項目を除外しない", async () => {
+			const { result } = await renderCore();
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+
+			const ready = result.current.uploads.getReady();
+
+			expect(ready.excludedTempIds).toEqual([]);
+			expect(ready.videos).toHaveLength(1);
 		});
 	});
 

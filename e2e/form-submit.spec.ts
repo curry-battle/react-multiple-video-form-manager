@@ -93,18 +93,15 @@ test.describe("フォーム送信", () => {
 		);
 		const data = JSON.parse(jsonStr);
 
+		// 表示順は配列の順序が表す
+		const [firstVideo, secondVideo] = data.videos;
+
 		// 1件目: サムネイルありの既存動画 → thumbnail.status === "unchanged"
-		const firstVideo = data.videos.find(
-			(v: { order: number }) => v.order === 0,
-		);
 		expect(firstVideo.thumbnail.status).toBe("unchanged");
 		expect(firstVideo.thumbnail.uploadedUrl).toContain("https://");
 
-		// 2件目: サムネイルなしの既存動画 → thumbnail フィールド自体なし
-		const secondVideo = data.videos.find(
-			(v: { order: number }) => v.order === 1,
-		);
-		expect(secondVideo.thumbnail).toBeUndefined();
+		// 2件目: サムネイルなしの既存動画 → thumbnail は null
+		expect(secondVideo.thumbnail).toBeNull();
 	});
 });
 
@@ -179,9 +176,11 @@ test.describe("統合シナリオ", () => {
 
 		// 差し替え(1件) + 削除(1件) = deletedVideoIds に2件
 		expect(data.deletedVideoIds).toHaveLength(2);
-		// videos には ToBeDeleted がなく、全て order が number
 		for (const v of data.videos) {
-			expect(typeof v.order).toBe("number");
+			// 表示順は配列の順序が表すので order は持たない
+			expect(v).not.toHaveProperty("order");
+			// 選択時アップロードが済んでいるので新規項目は転送参照を持つ
+			if (v.status === "new") expect(typeof v.uploadRef).toBe("string");
 		}
 	});
 
@@ -236,6 +235,6 @@ test.describe("統合シナリオ", () => {
 			(v: { status: string }) => v.status === "new",
 		);
 		expect(video.thumbnail.status).toBe("new");
-		expect(video.thumbnail.uploadedUrl).toContain("https://s3.example.com/");
+		expect(video.thumbnail.uploadRef).toContain("https://s3.example.com/");
 	});
 });

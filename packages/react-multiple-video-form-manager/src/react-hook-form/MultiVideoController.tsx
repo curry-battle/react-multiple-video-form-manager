@@ -47,6 +47,5 @@ export function MultiVideoController<
 		isAdding: result.isAdding,
 		isBusy: result.isBusy,
 		uploads: result.uploads,
-		prepareForSubmit: result.prepareForSubmit,
 	});
 }

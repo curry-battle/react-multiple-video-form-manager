@@ -1,7 +1,7 @@
 import {
 	getFileFromChangeEvent,
 	type MultiVideoError,
-	type PrepareForSubmitError,
+	type UploadedSubmitVideo,
 	type UploadFileFn,
 	type Video,
 } from "@curry-battle/react-multiple-video-form-manager";
@@ -44,10 +44,15 @@ export function VideoForm({ initialVideos }: VideoFormProps) {
 	const [isUploading, setIsUploading] = useState(false);
 	const [operationError, setOperationError] = useState<string | null>(null);
 
-	const handleError = useCallback((error: MultiVideoError) => {
-		setOperationError(error.message);
+	const showError = useCallback((message: string) => {
+		setOperationError(message);
 		setTimeout(() => setOperationError(null), 5000);
 	}, []);
+
+	const handleError = useCallback(
+		(error: MultiVideoError) => showError(error.message),
+		[showError],
+	);
 
 	const form = useForm<VideoPostFormType>({
 		resolver: standardSchemaResolver(videoPostSchema),
@@ -73,55 +78,33 @@ export function VideoForm({ initialVideos }: VideoFormProps) {
 				maxVideos={5}
 				uploadFile={uploadFile}
 				onError={handleError}
-				render={({
-					items,
-					rootErrors,
-					addVideo,
-					isBusy,
-					raw,
-					uploads,
-					prepareForSubmit,
-				}) => {
+				render={({ items, rootErrors, addVideo, isBusy, raw, uploads }) => {
 					const maxVideos = 5;
 
 					const onSubmit = async (_data: VideoPostFormType) => {
 						setIsUploading(true);
 						try {
-							// このサンプルでは選択時にアップロードを行う方針をとっているため、
-							// prepareForSubmit() は転送済みの参照を返すだけでアップロードは行わない。
-							// 転送の実装は uploadFile を参照
-							const { videos: resolved, deletedIds } = await prepareForSubmit();
-
-							const videosForUpdate = resolved.map((vid) => ({
-								id: vid.id,
-								status: vid.status,
-								order: vid.order,
-								uploadedUrl: vid.uploadedUrl,
-								thumbnail: vid.thumbnail
-									? {
-											status: vid.thumbnail.status,
-											...("source" in vid.thumbnail
-												? { source: vid.thumbnail.source }
-												: {}),
-											...("uploadedUrl" in vid.thumbnail
-												? { uploadedUrl: vid.thumbnail.uploadedUrl }
-												: {}),
-										}
-									: undefined,
-							}));
-
-							await API.updateVideos(videosForUpdate, [...deletedIds]);
-						} catch (error) {
-							const prepareError = error as PrepareForSubmitError;
-							if (prepareError.successfulUploadRefs) {
-								console.error(
-									"Partial upload success, orphan URLs:",
-									prepareError.successfulUploadRefs,
+							// 走行中の転送を待ち合わせる。まだ転送していないスロットは
+							// この中で発行されるので、保存を押した時点の取りこぼしが無い
+							const result = await uploads.wait();
+							if (!result.ok) {
+								showError(
+									`${result.failedTempIds.length} 件の動画をアップロードできませんでした。再試行してください。`,
 								);
+								return;
 							}
+
+							// render props 経由では uploadFile の有無が型で確定しないため、
+							// 転送参照が入る形へ絞る（MultiVideoRenderProps の doc を参照）
+							await API.updateVideos(
+								result.videos as UploadedSubmitVideo[],
+								result.deletedIds,
+							);
+						} catch (error) {
 							console.error("Submit error:", error);
+						} finally {
+							setIsUploading(false);
 						}
-						setIsUploading(false);
 					};
 
 					return (
@@ -273,12 +256,7 @@ export function VideoForm({ initialVideos }: VideoFormProps) {
 							<div className="pt-2">
 								<button
 									type="submit"
-									disabled={
-										isUploading ||
-										isBusy ||
-										uploads.pending.length > 0 ||
-										!formState.isValid
-									}
+									disabled={isUploading || isBusy || !formState.isValid}
 									className="w-full px-4 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 active:scale-[0.99] transition-all disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed shadow-sm"
 								>
 									{isUploading ? (

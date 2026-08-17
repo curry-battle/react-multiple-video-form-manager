@@ -1,3 +1,4 @@
+import type { UploadedSubmitVideo } from "@curry-battle/react-multiple-video-form-manager";
 import { generateUUIDv7, type UUID } from "../libs/Uuid";
 
 /** 中断要求で止まる待機。転送ハンドラが ctx.signal を尊重する形を実演する */
@@ -50,19 +51,10 @@ export const API = {
 		return `https://s3.example.com/${filePath}`;
 	},
 
+	// 送信素材をそのまま受ける。表示順は配列の順序が表すので order は持たない
 	updateVideos: async (
-		videos: {
-			id?: string;
-			status: string;
-			order: number;
-			uploadedUrl?: string;
-			thumbnail?: {
-				status: string;
-				source?: string;
-				uploadedUrl?: string;
-			};
-		}[],
-		deletedVideoIds: string[],
+		videos: readonly UploadedSubmitVideo[],
+		deletedVideoIds: readonly string[],
 	): Promise<boolean> => {
 		await new Promise((resolve) => setTimeout(resolve, 500));
 

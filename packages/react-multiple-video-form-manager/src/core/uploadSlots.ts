@@ -55,6 +55,36 @@ export function readUploadSource(
 }
 
 /**
+ * そのスロットが持つ転送参照。転送を要さないスロット（`readUploadSource` が
+ * undefined を返すもの）では常に undefined を返す。
+ *
+ * 既存項目のサーバ由来 URL はここでは返さない。転送参照とサーバ URL は別概念で、
+ * 混ぜると「転送が済んでいるか」の判定に既存項目が紛れ込む。
+ */
+export function readUploadRef(
+	video: Video,
+	kind: UploadKind,
+): string | undefined {
+	if (kind === UploadKind.Video) {
+		return video.status === VideoFormStatus.New ? video.uploadRef : undefined;
+	}
+	const thumbnail = video.thumbnail;
+	if (thumbnail === null || thumbnail.source === ThumbnailSource.Existing) {
+		return undefined;
+	}
+	return thumbnail.uploadRef;
+}
+
+/** 転送すべきものがあり、まだ参照を持たないスロットの入力 */
+export function readUnresolvedSource(
+	video: Video,
+	kind: UploadKind,
+): UploadSource | undefined {
+	if (readUploadRef(video, kind) !== undefined) return undefined;
+	return readUploadSource(video, kind);
+}
+
+/**
  * 転送参照を書き戻した `Video` を返す。スロットの中身が `token` と別物になって
  * いれば undefined（書き戻す先が無い）。
  *

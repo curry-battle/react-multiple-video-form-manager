@@ -1,9 +1,9 @@
 import {
 	getFileFromChangeEvent,
 	type MultiVideoError,
-	type PrepareForSubmitError,
-	type PrepareForSubmitFn,
-	type PrepareForSubmitOptions,
+	type UploadedSubmitVideo,
+	type UploadFileFn,
+	type UploadsApi,
 	type Video,
 } from "@curry-battle/react-multiple-video-form-manager";
 import { MultiVideoController } from "@curry-battle/react-multiple-video-form-manager/tanstack-form";
@@ -20,37 +20,37 @@ interface VideoFormProps {
 	initialVideos?: Video[];
 }
 
-// このサンプルは upload-on-submit（デフォルト戦略）を実演する。
-// video-form-rhf 側は upload-on-select（opt-in）を実演する。
-//
 // 本体とサムネイルで転送先を分けたい場合は ctx.kind で分岐する。
 // このサンプルは同じ presigned URL の発行経路を使うので分岐しない。
-const uploadOptions: PrepareForSubmitOptions = {
-	uploadFile: async (file, ctx) => {
-		const { presignedUrl, videoId } = await API.getPresignedUrl(
-			file.name,
-			file.type,
-		);
-		const uploadRef = await API.uploadToS3(
-			videoId,
-			file,
-			presignedUrl,
-			ctx.signal,
-		);
-		return { uploadRef };
-	},
+const uploadFile: UploadFileFn = async (file, ctx) => {
+	const { presignedUrl, videoId } = await API.getPresignedUrl(
+		file.name,
+		file.type,
+	);
+	const uploadRef = await API.uploadToS3(
+		videoId,
+		file,
+		presignedUrl,
+		ctx.signal,
+	);
+	return { uploadRef };
 };
 
 export function VideoForm({ initialVideos }: VideoFormProps) {
 	const [operationError, setOperationError] = useState<string | null>(null);
 
-	const handleError = useCallback((error: MultiVideoError) => {
-		setOperationError(error.message);
+	const showError = useCallback((message: string) => {
+		setOperationError(message);
 		setTimeout(() => setOperationError(null), 5000);
 	}, []);
 
-	// prepareForSubmit は render props 内でのみ取得できるため ref 経由で onSubmit に渡す
-	const prepareForSubmitRef = useRef<PrepareForSubmitFn | null>(null);
+	const handleError = useCallback(
+		(error: MultiVideoError) => showError(error.message),
+		[showError],
+	);
+
+	// uploads は render props 内でのみ取得できるため ref 経由で onSubmit に渡す
+	const uploadsRef = useRef<UploadsApi | null>(null);
 
 	const form = useForm({
 		defaultValues: {
@@ -59,42 +59,27 @@ export function VideoForm({ initialVideos }: VideoFormProps) {
 		} as VideoPostFormType,
 		validators: { onChange: videoPostSchema },
 		onSubmit: async () => {
-			const prepareForSubmit = prepareForSubmitRef.current;
-			if (!prepareForSubmit) return;
+			const uploads = uploadsRef.current;
+			if (!uploads) return;
 
 			try {
-				// prepareForSubmit 内部で未アップロードのファイルがアップロードされる
-				// 具体的な upload 処理は uploadOptions を参照
-				const { videos: resolved, deletedIds } =
-					await prepareForSubmit(uploadOptions);
-
-				const videosForUpdate = resolved.map((vid) => ({
-					id: vid.id,
-					status: vid.status,
-					order: vid.order,
-					uploadedUrl: vid.uploadedUrl,
-					thumbnail: vid.thumbnail
-						? {
-								status: vid.thumbnail.status,
-								...("source" in vid.thumbnail
-									? { source: vid.thumbnail.source }
-									: {}),
-								...("uploadedUrl" in vid.thumbnail
-									? { uploadedUrl: vid.thumbnail.uploadedUrl }
-									: {}),
-							}
-						: undefined,
-				}));
-
-				await API.updateVideos(videosForUpdate, [...deletedIds]);
-			} catch (error) {
-				const prepareError = error as PrepareForSubmitError;
-				if (prepareError.successfulUploadRefs) {
-					console.error(
-						"Partial upload success, orphan URLs:",
-						prepareError.successfulUploadRefs,
+				// 走行中の転送を待ち合わせる。まだ転送していないスロットは
+				// この中で発行されるので、保存を押した時点の取りこぼしが無い
+				const result = await uploads.wait();
+				if (!result.ok) {
+					showError(
+						`${result.failedTempIds.length} 件の動画をアップロードできませんでした。再試行してください。`,
 					);
+					return;
 				}
+
+				// render props 経由では uploadFile の有無が型で確定しないため、
+				// 転送参照が入る形へ絞る（MultiVideoRenderProps の doc を参照）
+				await API.updateVideos(
+					result.videos as UploadedSubmitVideo[],
+					result.deletedIds,
+				);
+			} catch (error) {
 				console.error("Submit error:", error);
 			}
 		},
@@ -143,16 +128,10 @@ export function VideoForm({ initialVideos }: VideoFormProps) {
 					form={form}
 					name="videos"
 					maxVideos={maxVideos}
+					uploadFile={uploadFile}
 					onError={handleError}
-					render={({
-						items,
-						rootErrors,
-						addVideo,
-						isBusy,
-						raw,
-						prepareForSubmit,
-					}) => {
-						prepareForSubmitRef.current = prepareForSubmit;
+					render={({ items, rootErrors, addVideo, isBusy, raw, uploads }) => {
+						uploadsRef.current = uploads;
 
 						return (
 							<>

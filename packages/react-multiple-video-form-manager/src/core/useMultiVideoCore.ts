@@ -1,13 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type {
-	PrepareForSubmitFn,
-	PrepareForSubmitOptions,
-} from "./prepareForSubmit";
-import { prepareForSubmit } from "./prepareForSubmit";
+import { buildSubmitPayload } from "./submitPayload";
 import type {
 	MultiVideoError,
 	MultiVideoErrorType,
 } from "./types/MultiVideoError";
+import type { SubmitVideo, UploadedSubmitVideo } from "./types/Submit";
 import type { Thumbnail } from "./types/Thumbnail";
 import { ThumbnailUtils } from "./types/Thumbnail";
 import type { UploadFileFn } from "./types/Upload";
@@ -26,7 +23,12 @@ import {
 	defaultCoreMessages,
 } from "./types/VideoSchemaTypes";
 import type { UploadSource } from "./uploadSlots";
-import { applyUploadRef, readUploadSource, slotKey } from "./uploadSlots";
+import {
+	applyUploadRef,
+	readUnresolvedSource,
+	readUploadSource,
+	slotKey,
+} from "./uploadSlots";
 import type { VideoFieldAdapter } from "./VideoFieldAdapter";
 import * as ops from "./videoListOps";
 
@@ -64,6 +66,44 @@ export type UseMultiVideoCoreHandlers = {
 	removeThumbnail: (tempId: string) => Promise<boolean>;
 };
 
+/**
+ * 走行中の転送を待ち合わせた結果。
+ *
+ * `videos` は可視順の送信素材（`SubmitVideo` の doc を参照）。`deletedIds` は
+ * 削除対象の既存 id で、「配列に無いものは削除」と宣言する API では使わない。
+ *
+ * 失敗を例外にしないのは、期待される失敗（転送の失敗）に例外を使うのが
+ * エルゴノミクス上よくないため。姉妹パッケージ
+ * `react-multiple-image-form-manager` と戻り値の意味論も揃う。
+ */
+export type UploadWaitResult =
+	| { ok: true; videos: SubmitVideo[]; deletedIds: string[] }
+	| { ok: false; failedTempIds: string[] };
+
+/** `uploadFile` を設定した場合。新規項目が転送参照を持つ形に確定する */
+export type UploadWaitUploadedResult =
+	| { ok: true; videos: UploadedSubmitVideo[]; deletedIds: string[] }
+	| { ok: false; failedTempIds: string[] };
+
+/**
+ * 転送の完了を待たずに集めた送信素材。
+ *
+ * 未完了のスロットを持つ項目は `videos` に入らず `excludedTempIds` で返る。
+ * 返さないと消費側が「この動画は含まれませんでした」と提示できない。
+ */
+export type ReadyVideos = {
+	videos: SubmitVideo[];
+	deletedIds: string[];
+	excludedTempIds: string[];
+};
+
+/** `uploadFile` を設定した場合。新規項目が転送参照を持つ形に確定する */
+export type ReadyUploadedVideos = {
+	videos: UploadedSubmitVideo[];
+	deletedIds: string[];
+	excludedTempIds: string[];
+};
+
 export type UploadsApi = {
 	/** 転送中のスロットを持つ tempId。件数は length */
 	pending: string[];
@@ -79,9 +119,32 @@ export type UploadsApi = {
 	 * `items[].uploadState` と `failed` で追う
 	 */
 	retry: (tempId: string) => boolean;
+	/**
+	 * 走行中の転送の完了を待ってから送信素材を返す。未着手のスロットは
+	 * この中で転送を発行して待つ。`uploadFile` 未設定なら待つ対象が無いので即座に
+	 * ok を返す。
+	 *
+	 * 失敗したスロットは自動で再試行しない。`retry` を呼ぶまで `ok: false` が続く
+	 */
+	wait: () => Promise<UploadWaitResult>;
+	/**
+	 * 待たずに、いま送れるものだけで送信素材を作る。
+	 *
+	 * 未完了のスロットが 1 つでもある項目は丸ごと除外し `excludedTempIds` で返す。
+	 * 「本体だけ送ってサムネイルを落とす」は、サムネイル無しで保存されるという
+	 * データ上の縮退を作るため採らない。項目自体はフォームに残るので、消費側は
+	 * 「今回は含まれなかった」と提示すること
+	 */
+	getReady: () => ReadyVideos;
 };
 
-export type UseMultiVideoCoreReturn = {
+/** `uploadFile` を設定した場合の uploads。送信素材の型だけが異なる */
+export type UploadsUploadedApi = Omit<UploadsApi, "wait" | "getReady"> & {
+	wait: () => Promise<UploadWaitUploadedResult>;
+	getReady: () => ReadyUploadedVideos;
+};
+
+type CoreBase = {
 	items: VideoItem[];
 	rootErrors: VideoFieldError[];
 	handlers: UseMultiVideoCoreHandlers;
@@ -89,10 +152,23 @@ export type UseMultiVideoCoreReturn = {
 	pendingOperations: ReadonlySet<string>;
 	isAdding: boolean;
 	isBusy: boolean;
-	uploads: UploadsApi;
-	prepareForSubmit: PrepareForSubmitFn;
 };
 
+export type UseMultiVideoCoreReturn = CoreBase & { uploads: UploadsApi };
+
+export type UseMultiVideoCoreUploadedReturn = CoreBase & {
+	uploads: UploadsUploadedApi;
+};
+
+/**
+ * render props で渡す形。送信素材は `uploadFile` の有無にかかわらず緩い型
+ * （`SubmitVideo`）になる。render コールバックの引数の型を `uploadFile` の有無で
+ * 分けると判別子が関数型になり、推論が不安定になるため。
+ *
+ * 緩い型は実行時に現れる形の上位集合なので嘘にはならないが、`uploadFile` を
+ * 設定した場合に `file` を受け付けない保存 API へ渡すにはキャストが要る。
+ * 送信素材の型を確定させたい場合はフックを直接使うこと
+ */
 export type MultiVideoRenderProps = Omit<
 	UseMultiVideoCoreReturn,
 	"handlers"
@@ -122,6 +198,23 @@ type UploadRecord = {
 	| { status: "failed"; error: unknown }
 );
 
+/**
+ * `uploads.wait` の収束ループで、進捗の無い周回を何回続けたら打ち切るか。
+ *
+ * 1 回で打ち切ると、待機中のファイル選び直し（元の転送が中断され、新しい転送が
+ * まだ結果を出していない周回）を誤って失敗と判定する。契約違反の adapter による
+ * ライブロックを可視の失敗へ変換するための上限であり、正常系では到達しない。
+ */
+const STALLED_ROUND_LIMIT = 2;
+
+export function useMultiVideoCore(
+	params: UseMultiVideoCoreParams & { uploadFile: UploadFileFn },
+): UseMultiVideoCoreUploadedReturn;
+export function useMultiVideoCore(
+	params: UseMultiVideoCoreParams,
+): UseMultiVideoCoreReturn;
+// 実装は緩い側で組む。厳しい側の保証（新規項目の転送参照が確定する）は
+// uploadFile 設定時の ok 条件から導かれるもので、実装内部で表現できる事実ではない
 export function useMultiVideoCore(
 	params: UseMultiVideoCoreParams,
 ): UseMultiVideoCoreReturn {
@@ -786,6 +879,168 @@ export function useMultiVideoCore(
 		return bound;
 	}, []);
 
+	/** 転送すべきものがあり、まだ参照を持たないスロットを列挙する */
+	const listUnresolvedSlots = useCallback((): {
+		video: Video;
+		kind: UploadKind;
+		source: UploadSource;
+	}[] => {
+		const slots: { video: Video; kind: UploadKind; source: UploadSource }[] =
+			[];
+		for (const video of adapterRef.current.getVideos()) {
+			for (const kind of UPLOAD_KINDS) {
+				const source = readUnresolvedSource(video, kind);
+				if (source !== undefined) slots.push({ video, kind, source });
+			}
+		}
+		return slots;
+	}, []);
+
+	const listUnresolvedTempIds = useCallback(
+		(): string[] => [
+			...new Set(listUnresolvedSlots().map(({ video }) => video.tempId)),
+		],
+		[listUnresolvedSlots],
+	);
+
+	/** 未転送のスロットへ転送を発行する */
+	const reissueUnresolved = useCallback(() => {
+		for (const { video, kind, source } of listUnresolvedSlots()) {
+			const rec = recordsRef.current.get(slotKey(video.tempId, kind));
+			// 走行中ならトークンが違っても発行しない。1 転送スロットに生きた転送は
+			// 1 本という制約を保つため。走行中の転送が対象を失っていれば、settle 時に
+			// 台帳から落ち、次の照合で現在のトークンに対して発行される
+			if (rec?.status === "pending") continue;
+			// 失敗済みは自動再試行せず retry に委ねる。ただし現在のトークン基準で
+			// 判定する。台帳が別のオブジェクトのものならこのスロットにとっては未着手で、
+			// 発行しないと永久に未転送のまま残る
+			if (rec?.status === "failed" && rec.token === source.token) continue;
+			startUpload(video.tempId, kind, source);
+		}
+	}, [listUnresolvedSlots, startUpload]);
+
+	const buildPayload = useCallback(
+		(excluded?: ReadonlySet<string>) =>
+			buildSubmitPayload(
+				adapterRef.current.getVideos(),
+				adapterRef.current.getDeletedVideoIds(),
+				excluded,
+			),
+		[],
+	);
+
+	const getReady = useCallback((): ReadyVideos => {
+		if (!uploadFileRef.current) {
+			// 転送しない構成では参照が無いのが正常。除外対象として扱うと
+			// 新規項目が全部消える
+			return { ...buildPayload(), excludedTempIds: [] };
+		}
+		// 未完了のスロットを持つ項目を素材から抜く。項目自体はフォームに残る。
+		// 走行中のものは転送が続き、未着手のものは次の wait が発行するが、
+		// 失敗済みのものは自動再試行しないため retry を呼ぶまで除外され続ける
+		const excludedTempIds = listUnresolvedTempIds();
+		return {
+			...buildPayload(new Set(excludedTempIds)),
+			excludedTempIds,
+		};
+	}, [buildPayload, listUnresolvedTempIds]);
+
+	const listFailedTempIds = useCallback((): string[] => {
+		const failed = new Set<string>();
+		for (const rec of recordsRef.current.values()) {
+			if (rec.status === "failed") failed.add(rec.tempId);
+		}
+		return [...failed];
+	}, []);
+
+	const wait = useCallback(async (): Promise<UploadWaitResult> => {
+		if (!uploadFileRef.current) {
+			// 未設定の消費側では参照が無いのが正常。失敗扱いすると、一度も転送を
+			// 試みていない項目が failedTempIds に並ぶ
+			return { ok: true, ...buildPayload() };
+		}
+
+		// 収束ループ。待機開始時点のスナップショットだけを await すると、
+		// 待機中に retry や再発行が始めた転送が待ち対象から漏れる
+		const snapshot = () =>
+			`${listUnresolvedTempIds().join(",")}|${listFailedTempIds().join(",")}`;
+
+		let stalledRounds = 0;
+
+		for (;;) {
+			const before = snapshot();
+			reissueUnresolved();
+
+			// 待つのはフォームに残っている項目の転送だけ。handlers を介さない
+			// 差し替え（form.reset や adapter への直接書き込み）で項目が消えると、
+			// その転送の結果は書き戻し時に捨てられる。ok 判定と素材が getVideos() から
+			// 出ているので、待機集合も同じ供給源に揃える
+			const alive = new Set(
+				adapterRef.current.getVideos().map((vid) => vid.tempId),
+			);
+			const inflight: Promise<void>[] = [];
+			for (const rec of recordsRef.current.values()) {
+				if (rec.status === "pending" && alive.has(rec.tempId)) {
+					inflight.push(rec.settled);
+				}
+			}
+			if (inflight.length > 0) {
+				await Promise.allSettled(inflight);
+				stalledRounds = snapshot() === before ? stalledRounds + 1 : 0;
+				if (stalledRounds < STALLED_ROUND_LIMIT) continue;
+
+				// await 中に retry が再発行していることがある。走行中の転送を failed で
+				// 塗ると、その結果が破棄されて無駄撃ちになる
+				const stuck = listUnresolvedSlots().filter(
+					({ video, kind }) =>
+						recordsRef.current.get(slotKey(video.tempId, kind))?.status !==
+						"pending",
+				);
+				if (stuck.length === 0) {
+					stalledRounds = 0;
+					continue;
+				}
+				// 台帳にも失敗として残す。ここで返るだけだと uploads.failed が空のままに
+				// なり、消費側が該当項目を提示することも retry することもできない
+				writeRecords((draft) => {
+					let changed = false;
+					for (const { video, kind, source } of stuck) {
+						const key = slotKey(video.tempId, kind);
+						// 既に失敗している転送の error は原因を持っているので温存する。
+						// ライブロックの説明で塗ると消費側に無関係な理由を見せることになる
+						if (draft.get(key)?.status === "failed") continue;
+						draft.set(key, {
+							status: "failed",
+							tempId: video.tempId,
+							kind,
+							token: source.token,
+							error: new Error(
+								"upload made no progress; the adapter may not preserve File / Blob references",
+							),
+						});
+						changed = true;
+					}
+					return changed;
+				});
+				return {
+					ok: false,
+					failedTempIds: [...new Set(stuck.map(({ video }) => video.tempId))],
+				};
+			}
+
+			const failedTempIds = listUnresolvedTempIds();
+			if (failedTempIds.length > 0) return { ok: false, failedTempIds };
+			return { ok: true, ...buildPayload() };
+		}
+	}, [
+		buildPayload,
+		listFailedTempIds,
+		listUnresolvedSlots,
+		listUnresolvedTempIds,
+		reissueUnresolved,
+		writeRecords,
+	]);
+
 	const retry = useCallback(
 		(tempId: string): boolean => {
 			const video = adapterRef.current
@@ -836,8 +1091,14 @@ export function useMultiVideoCore(
 			if (rec.status === "pending") pending.add(rec.tempId);
 			if (rec.status === "failed") failed.add(rec.tempId);
 		}
-		return { pending: [...pending], failed: [...failed], retry };
-	}, [records, retry]);
+		return {
+			pending: [...pending],
+			failed: [...failed],
+			retry,
+			wait,
+			getReady,
+		};
+	}, [records, retry, wait, getReady]);
 
 	// done は公開しない（UploadState の doc を参照）。転送していないスロットの
 	// キーも作らないので、両スロットとも報告が無い項目は空オブジェクトになる
@@ -894,16 +1155,6 @@ export function useMultiVideoCore(
 		[watchedVideos, deletedVideoIds],
 	);
 
-	const boundPrepareForSubmit = useCallback(
-		(options?: PrepareForSubmitOptions) =>
-			prepareForSubmit(
-				adapterRef.current.getVideos(),
-				adapterRef.current.getDeletedVideoIds(),
-				options,
-			),
-		[],
-	);
-
 	return {
 		items,
 		rootErrors: adapter.errors.root,
@@ -913,6 +1164,5 @@ export function useMultiVideoCore(
 		isAdding,
 		isBusy,
 		uploads,
-		prepareForSubmit: boundPrepareForSubmit,
 	};
 }

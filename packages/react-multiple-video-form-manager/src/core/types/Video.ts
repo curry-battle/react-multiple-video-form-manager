@@ -31,10 +31,6 @@ export type VideoExisting = VideoBase & {
 
 export type Video = VideoNew | VideoExisting;
 
-export type VideoForSubmitNew = VideoNew & { order: number };
-export type VideoForSubmitExisting = VideoExisting & { order: number };
-export type VideoForSubmit = VideoForSubmitNew | VideoForSubmitExisting;
-
 export type ProcessFileFn = (file: File) => Promise<File>;
 
 // functions
@@ -105,11 +101,6 @@ export const VideoUtils = {
 	): { deletedId: string; newVideo: VideoNew } => {
 		const newVideo = VideoUtils.createNew(existingVideo.tempId, newFile);
 		return { deletedId: existingVideo.id, newVideo };
-	},
-
-	// 送信用にorder値を付与（配列indexがそのままorder）
-	computeVideosForSubmit: (videos: readonly Video[]): VideoForSubmit[] => {
-		return videos.map((vid, index) => ({ ...vid, order: index }));
 	},
 
 	// サムネイルの送信用ステータスを解決
@@ -200,25 +191,6 @@ if (import.meta.vitest) {
 	});
 
 	describe("VideoUtils", () => {
-		describe("computeVideosForSubmit", () => {
-			it("空配列 → 空配列", () => {
-				expect(VideoUtils.computeVideosForSubmit([])).toEqual([]);
-			});
-
-			it("New/Existing のみ → 0, 1, 2... と連番order", () => {
-				const videos: Video[] = [makeNew(), makeExisting()];
-				const result = VideoUtils.computeVideosForSubmit(videos);
-				expect(result.map((r) => r.order)).toEqual([0, 1]);
-			});
-
-			it("元配列を変更しないこと", () => {
-				const videos: Video[] = [makeNew(), makeExisting()];
-				const original = [...videos];
-				VideoUtils.computeVideosForSubmit(videos);
-				expect(videos).toEqual(original);
-			});
-		});
-
 		describe("createExisting", () => {
 			it("thumbnailUrl あり → ThumbnailExisting が組まれる", () => {
 				const result = VideoUtils.createExisting({
