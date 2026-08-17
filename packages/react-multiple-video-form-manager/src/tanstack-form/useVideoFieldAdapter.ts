@@ -41,7 +41,7 @@ const EMPTY_META_ERRORS: readonly unknown[] = Object.freeze([]);
 /**
  * ストアを素のキーアクセスで読む一方 `setFieldValue` / `validateField` は
  * TanStack のパス解決に載るため、ネストパスを渡すと read と write が別の場所を指す。
- * TanStack のパス構文はドットと角括弧の 2 種類なので両方を弾く。
+ * ドットと角括弧は TanStack のパス構文の両形式。
  */
 function assertTopLevelKey(label: string, key: string): void {
 	if (key.includes(".") || key.includes("[")) {
@@ -60,8 +60,7 @@ function assertTopLevelKey(label: string, key: string): void {
  * 検証へフォールバックし、`FormApi.setFieldValue` が `fieldMeta[name]` を
  * 自前で生成するので、touched / dirty / フィールド単位のエラーは field 無しでも追える。
  *
- * `name` / `deletedName` はフォームデータのトップレベルキーであること。
- * ストアはネストパス解決ではなく素のキーアクセスで読む。
+ * `name` / `deletedName` はフォームデータのトップレベルキーであること（assertTopLevelKey）。
  */
 export function useVideoFieldAdapter<
 	TFieldName extends string,

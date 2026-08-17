@@ -20,12 +20,10 @@ export type MultiVideoControllerProps<
 } & MultiVideoCoreOptions;
 
 /**
- * TanStack Form 用の render props コンポーネント。
+ * `useMultiVideoController` の糖衣。
  *
- * `useMultiVideoController` の糖衣。フックはフォームストア経由で read / write
- * するのでフォームレベルで呼べる。submit ハンドラから `prepareForSubmit` を
- * 使いたい場合はフックを直接呼ぶこと（このコンポーネントは render の内側に
- * 閉じ込めるため、ref での橋渡しが要る）。
+ * submit ハンドラから `prepareForSubmit` を使う場合はフックを直接呼ぶこと。
+ * このコンポーネントは render の内側にしか渡さないので ref での橋渡しが要る。
  */
 export function MultiVideoController<
 	TFieldName extends string,
