@@ -5,9 +5,11 @@ import { useEffect, useRef } from "react";
 import { useForm as useRhfForm } from "react-hook-form";
 import { z } from "zod";
 import type { MultiVideoError } from "../../core/types/MultiVideoError";
+import type { UploadFileFn } from "../../core/types/Upload";
+import { UPLOAD_KINDS } from "../../core/types/Upload";
+import type { VideoUploadState } from "../../core/types/UploadState";
 import type {
 	ProcessFileFn,
-	UploadFileFn,
 	Video,
 	VideoExisting,
 	VideoNew,
@@ -45,6 +47,25 @@ export const makeNew = (tempId: string): VideoNew => ({
 	thumbnail: null,
 });
 
+/** 転送状態を 1 本の文字列に畳んで assert しやすくする */
+function formatUploadState(state: VideoUploadState): string {
+	const parts: string[] = [];
+	for (const kind of UPLOAD_KINDS) {
+		const slot = state[kind];
+		if (slot === undefined) continue;
+		if (slot.status === "failed") {
+			parts.push(`${kind}:failed`);
+			continue;
+		}
+		parts.push(
+			slot.progress === undefined
+				? `${kind}:pending`
+				: `${kind}:pending:${Math.round(slot.progress * 100)}`,
+		);
+	}
+	return parts.join(",");
+}
+
 // ---------- shared VideoItem component ----------
 
 function VideoItem({
@@ -57,6 +78,8 @@ function VideoItem({
 	onSetThumbnail,
 	onCaptureThumbnail,
 	onRemoveThumbnail,
+	onRetry,
+	uploadState,
 	isFirst,
 	isLast,
 	error,
@@ -71,6 +94,8 @@ function VideoItem({
 	onSetThumbnail: (tempId: string, file: File) => void;
 	onCaptureThumbnail: (tempId: string) => void;
 	onRemoveThumbnail: (tempId: string) => void;
+	onRetry: (tempId: string) => void;
+	uploadState: VideoUploadState;
 	isFirst: boolean;
 	isLast: boolean;
 	error: string | undefined;
@@ -97,6 +122,16 @@ function VideoItem({
 			<span data-testid={`has-thumbnail-${index}`}>
 				{video.thumbnail ? "yes" : "no"}
 			</span>
+			<span data-testid={`upload-state-${index}`}>
+				{formatUploadState(uploadState)}
+			</span>
+			<button
+				type="button"
+				data-testid={`retry-${index}`}
+				onClick={() => onRetry(video.tempId)}
+			>
+				retry
+			</button>
 			<button
 				type="button"
 				data-testid={`move-up-${index}`}
@@ -242,19 +277,28 @@ export function RhfHarness({
 			deletedName="videosDeletedIds"
 			maxVideos={maxVideos}
 			processFile={processFile}
-			uploadOnSelect={uploadFile ? { uploadFile } : undefined}
+			uploadFile={uploadFile}
 			onError={onError}
-			render={({ items, rootErrors, addVideo, isBusy, raw }) => (
+			render={({ items, rootErrors, addVideo, isBusy, raw, uploads }) => (
 				<div>
 					<div data-testid="item-count">{items.length}</div>
 					<div data-testid="deleted-ids">{raw.deletedVideoIds.join(",")}</div>
 					<div data-testid="is-busy">{String(isBusy)}</div>
+					<div data-testid="uploads-pending">{uploads.pending.length}</div>
+					<div data-testid="uploads-failed">{uploads.failed.length}</div>
 					{rootErrors.length > 0 && (
 						<div data-testid="root-error">{rootErrors[0]?.message}</div>
 					)}
 					{items.map(
 						(
-							{ video, errors, handlers: itemHandlers, canMoveUp, canMoveDown },
+							{
+								video,
+								errors,
+								handlers: itemHandlers,
+								canMoveUp,
+								canMoveDown,
+								uploadState,
+							},
 							index,
 						) => (
 							<VideoItem
@@ -272,6 +316,8 @@ export function RhfHarness({
 									itemHandlers.setThumbnailFromFrame(makeVideo())
 								}
 								onRemoveThumbnail={() => itemHandlers.removeThumbnail()}
+								onRetry={(tempId) => uploads.retry(tempId)}
+								uploadState={uploadState}
 								isFirst={!canMoveUp}
 								isLast={!canMoveDown}
 								error={errors?.file?.message}
@@ -352,13 +398,15 @@ export function TanstackHarness({
 			deletedName="videosDeletedIds"
 			maxVideos={maxVideos}
 			processFile={processFile}
-			uploadOnSelect={uploadFile ? { uploadFile } : undefined}
+			uploadFile={uploadFile}
 			onError={onError}
-			render={({ items, rootErrors, addVideo, isBusy, raw }) => (
+			render={({ items, rootErrors, addVideo, isBusy, raw, uploads }) => (
 				<div>
 					<div data-testid="item-count">{items.length}</div>
 					<div data-testid="deleted-ids">{raw.deletedVideoIds.join(",")}</div>
 					<div data-testid="is-busy">{String(isBusy)}</div>
+					<div data-testid="uploads-pending">{uploads.pending.length}</div>
+					<div data-testid="uploads-failed">{uploads.failed.length}</div>
 					{rootErrors.length > 0 && (
 						<div data-testid="root-error">
 							{(rootErrors[0] as { message?: string })?.message}
@@ -366,7 +414,14 @@ export function TanstackHarness({
 					)}
 					{items.map(
 						(
-							{ video, errors, handlers: itemHandlers, canMoveUp, canMoveDown },
+							{
+								video,
+								errors,
+								handlers: itemHandlers,
+								canMoveUp,
+								canMoveDown,
+								uploadState,
+							},
 							index,
 						) => (
 							<VideoItem
@@ -384,6 +439,8 @@ export function TanstackHarness({
 									itemHandlers.setThumbnailFromFrame(makeVideo())
 								}
 								onRemoveThumbnail={() => itemHandlers.removeThumbnail()}
+								onRetry={(tempId) => uploads.retry(tempId)}
+								uploadState={uploadState}
 								isFirst={!canMoveUp}
 								isLast={!canMoveDown}
 								error={errors?.file?.message}

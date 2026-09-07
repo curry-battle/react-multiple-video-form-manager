@@ -3,12 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "vitest-browser-react";
 import { ThumbnailSource } from "../types/Thumbnail";
 import type {
+	UploadFileContext,
 	UploadFileFn,
-	UploadOnSelectOptions,
-	Video,
-	VideoExisting,
-	VideoNew,
-} from "../types/Video";
+	UploadFileResult,
+	UploadKind,
+} from "../types/Upload";
+import type { Video, VideoExisting, VideoNew } from "../types/Video";
 import type {
 	CoreMessages,
 	VideoFieldError,
@@ -26,6 +26,25 @@ function createDeferred<T>() {
 		resolve = r;
 	});
 	return { promise, resolve };
+}
+
+type UploadCall = {
+	file: File;
+	kind: UploadKind;
+	ctx: UploadFileContext;
+	resolve: (result: UploadFileResult) => void;
+	reject: (error: unknown) => void;
+};
+
+/** 転送の解決タイミングをテスト側で握るための uploadFile */
+function createUploadSpy() {
+	const calls: UploadCall[] = [];
+	const uploadFile: UploadFileFn = (file, ctx) =>
+		new Promise<UploadFileResult>((resolve, reject) => {
+			calls.push({ file, kind: ctx.kind, ctx, resolve, reject });
+		});
+	const callsOf = (kind: UploadKind) => calls.filter((c) => c.kind === kind);
+	return { uploadFile, calls, callsOf };
 }
 
 const makeNewVideo = (overrides?: Partial<VideoNew>): VideoNew => ({
@@ -51,6 +70,28 @@ const makeExistingVideo = (
 	...overrides,
 });
 
+const videoFile = (name = "a.mp4") =>
+	new File(["v"], name, { type: "video/mp4" });
+const thumbFile = (name = "t.jpg") =>
+	new File(["t"], name, { type: "image/jpeg" });
+
+/** 書き込まれた転送参照を捨てる契約違反の adapter を再現する */
+const stripUploadRef = (video: Video): Video =>
+	video.status === VideoFormStatus.New
+		? { ...video, uploadRef: undefined }
+		: video;
+
+/** read のたびに File を作り直す契約違反の adapter を再現する */
+const rebuildFile = (video: Video): Video =>
+	video.status === VideoFormStatus.New
+		? {
+				...video,
+				file: new File([video.file], video.file.name, {
+					type: video.file.type,
+				}),
+			}
+		: video;
+
 /**
  * FakeVideoFieldAdapter。setVideos で配列全体を置き換える。
  *
@@ -59,7 +100,12 @@ const makeExistingVideo = (
  * - videos プロパティはレンダー時点のスナップショット (再レンダーまで stale)
  * - getVideos() はストアの同期 read (常に最新)
  */
-function useFakeAdapter(initial: Video[], errors?: VideosError) {
+function useFakeAdapter(
+	initial: Video[],
+	errors?: VideosError,
+	dropUploadRefs = false,
+	unstableReads = false,
+) {
 	const [, force] = useState(0);
 	const videosRef = useRef<Video[]>(initial);
 	const deletedIdsRef = useRef<string[]>([]);
@@ -80,10 +126,11 @@ function useFakeAdapter(initial: Video[], errors?: VideosError) {
 	const adapter: VideoFieldAdapter = {
 		videos: videosSnapshot,
 		setVideos: (next) => {
-			videosRef.current = next;
+			videosRef.current = dropUploadRefs ? next.map(stripUploadRef) : next;
 			force((n) => n + 1);
 		},
-		getVideos: () => videosRef.current,
+		getVideos: () =>
+			unstableReads ? videosRef.current.map(rebuildFile) : videosRef.current,
 		deletedVideoIds: deletedIdsSnapshot,
 		setDeletedVideoIds: (next) => {
 			deletedIdsRef.current = next;
@@ -109,18 +156,23 @@ async function renderCore(
 		processFile?: (file: File) => Promise<File>;
 		processThumbnailFile?: (file: File) => Promise<File>;
 		uploadFile?: UploadFileFn;
-		uploadThumbnailFile?: UploadFileFn;
 		onError?: (error: unknown) => void;
-		onOrphanedUpload?: (uploadRef: string) => void;
 		messages?: CoreMessages;
+		dropUploadRefs?: boolean;
+		unstableReads?: boolean;
 	} = {},
 ) {
 	const ref: {
 		adapter?: VideoFieldAdapter;
 		validate?: ReturnType<typeof vi.fn>;
 	} = {};
-	const { result } = await renderHook(() => {
-		const { adapter, validate } = useFakeAdapter(initial, options.errors);
+	const rendered = await renderHook(() => {
+		const { adapter, validate } = useFakeAdapter(
+			initial,
+			options.errors,
+			options.dropUploadRefs,
+			options.unstableReads,
+		);
 		ref.adapter = adapter;
 		ref.validate = validate;
 		return useMultiVideoCore({
@@ -128,17 +180,17 @@ async function renderCore(
 			maxVideos: options.maxVideos,
 			processFile: options.processFile,
 			processThumbnailFile: options.processThumbnailFile,
-			uploadOnSelect: {
-				uploadFile: options.uploadFile,
-				uploadThumbnailFile: options.uploadThumbnailFile,
-				onOrphanedUpload: options.onOrphanedUpload,
-			},
+			uploadFile: options.uploadFile,
 			onError: options.onError,
 			messages: options.messages,
 		});
 	});
-	return { result, ref };
+	return { result: rendered.result, unmount: rendered.unmount, ref };
 }
+
+const firstVideo = (result: {
+	current: { raw: { videos: readonly Video[] } };
+}) => result.current.raw.videos[0] as VideoNew;
 
 // --- Tests ---
 
@@ -150,10 +202,9 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 	describe("handleAdd", () => {
 		it("空配列に追加できること", async () => {
 			const { result } = await renderCore();
-			const file = new File(["v"], "a.mp4", { type: "video/mp4" });
 			let ok = false;
 			await act(async () => {
-				ok = await result.current.handlers.add(file);
+				ok = await result.current.handlers.add(videoFile());
 			});
 			expect(ok).toBe(true);
 			expect(result.current.raw.videos).toHaveLength(1);
@@ -168,9 +219,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			});
 			let ok = true;
 			await act(async () => {
-				ok = await result.current.handlers.add(
-					new File(["v"], "b.mp4", { type: "video/mp4" }),
-				);
+				ok = await result.current.handlers.add(videoFile("b.mp4"));
 			});
 			expect(ok).toBe(false);
 			expect(onError).toHaveBeenCalledWith(
@@ -182,9 +231,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const visible = makeNewVideo();
 			const { result } = await renderCore([visible]);
 			await act(async () => {
-				await result.current.handlers.add(
-					new File(["v"], "c.mp4", { type: "video/mp4" }),
-				);
+				await result.current.handlers.add(videoFile("c.mp4"));
 			});
 			const videos = result.current.raw.videos;
 			expect(videos).toHaveLength(2);
@@ -197,9 +244,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const processFile = vi.fn(async (f: File) => f);
 			const { result } = await renderCore([], { processFile, onError });
 			await act(async () => {
-				await result.current.handlers.add(
-					new File(["v"], "p.mp4", { type: "video/mp4" }),
-				);
+				await result.current.handlers.add(videoFile("p.mp4"));
 			});
 			expect(processFile).toHaveBeenCalled();
 
@@ -212,9 +257,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			});
 			let ok = true;
 			await act(async () => {
-				ok = await r2.current.handlers.add(
-					new File(["v"], "p2.mp4", { type: "video/mp4" }),
-				);
+				ok = await r2.current.handlers.add(videoFile("p2.mp4"));
 			});
 			expect(ok).toBe(false);
 			expect(onError).toHaveBeenCalledWith(
@@ -225,9 +268,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("追加後に adapter.validate が呼ばれること", async () => {
 			const { result, ref } = await renderCore();
 			await act(async () => {
-				await result.current.handlers.add(
-					new File(["v"], "x.mp4", { type: "video/mp4" }),
-				);
+				await result.current.handlers.add(videoFile("x.mp4"));
 			});
 			expect(ref.validate).toHaveBeenCalled();
 		});
@@ -238,9 +279,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 			let ok = true;
 			await act(async () => {
-				ok = await result.current.handlers.add(
-					new File(["v"], "over.mp4", { type: "video/mp4" }),
-				);
+				ok = await result.current.handlers.add(videoFile("over.mp4"));
 			});
 			expect(ok).toBe(false);
 
@@ -250,9 +289,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			expect(result.current.raw.videos).toHaveLength(0);
 
 			await act(async () => {
-				ok = await result.current.handlers.add(
-					new File(["v"], "new.mp4", { type: "video/mp4" }),
-				);
+				ok = await result.current.handlers.add(videoFile("new.mp4"));
 			});
 			expect(ok).toBe(true);
 			expect(result.current.raw.videos).toHaveLength(1);
@@ -264,10 +301,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const ex = makeExistingVideo({ tempId: "temp_ex" });
 			const { result } = await renderCore([ex]);
 			await act(async () => {
-				await result.current.handlers.changeFile(
-					"temp_ex",
-					new File(["v"], "new.mp4", { type: "video/mp4" }),
-				);
+				await result.current.handlers.changeFile("temp_ex", videoFile("n.mp4"));
 			});
 			const videos = result.current.raw.videos;
 			expect(videos).toHaveLength(1);
@@ -275,19 +309,25 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			expect(result.current.raw.deletedVideoIds).toContain(ex.id);
 		});
 
+		it("Existing の差し替えで tempId が維持されること", async () => {
+			const ex = makeExistingVideo({ tempId: "temp_ex" });
+			const { result } = await renderCore([ex]);
+			await act(async () => {
+				await result.current.handlers.changeFile("temp_ex", videoFile("n.mp4"));
+			});
+			expect(result.current.raw.videos[0].tempId).toBe("temp_ex");
+		});
+
 		it("New → file 差し替え、配列長は不変", async () => {
 			const nv = makeNewVideo({ tempId: "temp_n" });
 			const { result } = await renderCore([nv]);
 			await act(async () => {
-				await result.current.handlers.changeFile(
-					"temp_n",
-					new File(["v"], "n2.mp4", { type: "video/mp4" }),
-				);
+				await result.current.handlers.changeFile("temp_n", videoFile("n2.mp4"));
 			});
 			const videos = result.current.raw.videos;
 			expect(videos).toHaveLength(1);
 			expect(videos[0].status).toBe(VideoFormStatus.New);
-			expect((videos[0] as VideoNew).file.name).toBe("n2.mp4");
+			expect(firstVideo(result).file.name).toBe("n2.mp4");
 		});
 	});
 
@@ -382,10 +422,10 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			await act(async () => {
 				await result.current.handlers.setThumbnailFromFile(
 					"temp_n",
-					new File(["t"], "t.jpg", { type: "image/jpeg" }),
+					thumbFile(),
 				);
 			});
-			const updated = result.current.raw.videos[0] as VideoNew;
+			const updated = firstVideo(result);
 			expect(updated.thumbnail).not.toBeNull();
 			expect(updated.thumbnail?.source).toBe(ThumbnailSource.Upload);
 		});
@@ -393,16 +433,13 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("handleRemoveThumbnail が New 動画のサムネを null に", async () => {
 			const nv = makeNewVideo({
 				tempId: "temp_n",
-				thumbnail: {
-					source: ThumbnailSource.Upload,
-					file: new File(["t"], "t.jpg", { type: "image/jpeg" }),
-				},
+				thumbnail: { source: ThumbnailSource.Upload, file: thumbFile() },
 			});
 			const { result } = await renderCore([nv]);
 			await act(async () => {
 				await result.current.handlers.removeThumbnail("temp_n");
 			});
-			expect((result.current.raw.videos[0] as VideoNew).thumbnail).toBeNull();
+			expect(firstVideo(result).thumbnail).toBeNull();
 		});
 
 		it("handleSetThumbnailFromFile: tempId 不一致で false を返す", async () => {
@@ -412,7 +449,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			await act(async () => {
 				ok = await result.current.handlers.setThumbnailFromFile(
 					"does-not-exist",
-					new File(["t"], "t.jpg", { type: "image/jpeg" }),
+					thumbFile(),
 				);
 			});
 			expect(ok).toBe(false);
@@ -438,6 +475,11 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				{ message: "root!" },
 			]);
 		});
+
+		it("転送していない項目の uploadState は空", async () => {
+			const { result } = await renderCore([makeNewVideo({ tempId: "a" })]);
+			expect(result.current.items[0].uploadState).toEqual({});
+		});
 	});
 
 	describe("stale スナップショット競合", () => {
@@ -450,8 +492,8 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 			const { result } = await renderCore([], { maxVideos: 1, processFile });
 
-			const fileA = new File(["a"], "a.mp4", { type: "video/mp4" });
-			const fileB = new File(["b"], "b.mp4", { type: "video/mp4" });
+			const fileA = videoFile("a.mp4");
+			const fileB = videoFile("b.mp4");
 
 			await act(async () => {
 				const p1 = result.current.handlers.add(fileA);
@@ -472,7 +514,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const b = makeExistingVideo({ tempId: "temp_B" });
 			const { result } = await renderCore([a, b], { processFile });
 
-			const newFile = new File(["x"], "x.mp4", { type: "video/mp4" });
+			const newFile = videoFile("x.mp4");
 
 			await act(async () => {
 				const changing = result.current.handlers.changeFile("temp_B", newFile);
@@ -510,7 +552,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const a = makeExistingVideo({ tempId: "temp_A" });
 			const { result } = await renderCore([a], { processFile });
 
-			const file = new File(["n"], "n.mp4", { type: "video/mp4" });
+			const file = videoFile("n.mp4");
 
 			await act(async () => {
 				const adding = result.current.handlers.add(file);
@@ -534,8 +576,8 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 			const { result } = await renderCore([], { processFile });
 
-			const fileA = new File(["a"], "a.mp4", { type: "video/mp4" });
-			const fileB = new File(["b"], "b.mp4", { type: "video/mp4" });
+			const fileA = videoFile("a.mp4");
+			const fileB = videoFile("b.mp4");
 
 			await act(async () => {
 				const p1 = result.current.handlers.add(fileA);
@@ -562,21 +604,23 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			expect(result.current.raw.videos).toHaveLength(1);
 			expect(result.current.raw.videos[0].tempId).toBe("temp_B");
 		});
-	});
 
-	describe("epoch — 完了順逆転の防止", () => {
-		it("handleFileChange: 後発 resolve → 先発 resolve で最終状態が後発のファイルになる", async () => {
+		it("[stale] 加工が先に終わっても、後から発行した差し替えが残る", async () => {
 			const dSlow = createDeferred<File>();
 			const dFast = createDeferred<File>();
-			const deferreds = [dSlow, dFast];
 			let call = 0;
-			const processFile = vi.fn(async (_f: File) => deferreds[call++].promise);
+			// 先に発行した操作の加工が後に終わる（重いファイルの圧縮を模す）
+			const processFile = vi.fn(async (f: File) => {
+				const deferred = [dSlow, dFast][call++];
+				const processed = await deferred.promise;
+				return new File([processed], f.name, { type: f.type });
+			});
 
 			const nv = makeNewVideo({ tempId: "temp_target" });
 			const { result } = await renderCore([nv], { processFile });
 
-			const fileSlow = new File(["slow"], "slow.mp4", { type: "video/mp4" });
-			const fileFast = new File(["fast"], "fast.mp4", { type: "video/mp4" });
+			const fileSlow = videoFile("slow.mp4");
+			const fileFast = videoFile("fast.mp4");
 
 			await act(async () => {
 				const p1 = result.current.handlers.changeFile("temp_target", fileSlow);
@@ -586,99 +630,114 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				await Promise.all([p1, p2]);
 			});
 
-			const videos = result.current.raw.videos;
-			expect(videos).toHaveLength(1);
-			expect((videos[0] as VideoNew).file.name).toBe("fast.mp4");
+			expect(firstVideo(result).file.name).toBe("fast.mp4");
 		});
 
-		it("handleFileChange 発火後に handleDelete → resolve しても動画が復活しない", async () => {
-			const d = createDeferred<File>();
-			const processFile = vi.fn(async (_f: File) => d.promise);
+		it("[stale] 本体の加工中にサムネイルを設定しても本体の差し替えは捨てられない", async () => {
+			const dVideo = createDeferred<File>();
+			const processFile = vi.fn(async (_f: File) => dVideo.promise);
 
 			const nv = makeNewVideo({ tempId: "temp_target" });
 			const { result } = await renderCore([nv], { processFile });
 
-			const file = new File(["x"], "x.mp4", { type: "video/mp4" });
+			const newFile = videoFile("changed.mp4");
 
 			await act(async () => {
 				const changing = result.current.handlers.changeFile(
 					"temp_target",
-					file,
+					newFile,
 				);
-				await result.current.handlers.delete("temp_target");
-				d.resolve(file);
+				// 本体の加工中にサムネイルを設定する（世代を共有していると本体が捨てられる）
+				await result.current.handlers.setThumbnailFromFile(
+					"temp_target",
+					thumbFile(),
+				);
+				dVideo.resolve(newFile);
 				await changing;
 			});
 
-			expect(result.current.raw.videos).toHaveLength(0);
+			const video = firstVideo(result);
+			expect(video.file.name).toBe("changed.mp4");
+			expect(video.thumbnail?.source).toBe(ThumbnailSource.Upload);
 		});
 
-		it("epoch 破棄時に onError は発火しない（成功ケース）", async () => {
-			const dSlow = createDeferred<File>();
-			const dFast = createDeferred<File>();
-			const deferreds = [dSlow, dFast];
-			let call = 0;
-			const processFile = vi.fn(async (_f: File) => deferreds[call++].promise);
-			const onError = vi.fn();
+		it("[stale] サムネイル削除は加工中の設定操作に勝つ", async () => {
+			const dThumb = createDeferred<File>();
+			const processThumbnailFile = vi.fn(async (_f: File) => dThumb.promise);
 
 			const nv = makeNewVideo({ tempId: "temp_target" });
-			const { result } = await renderCore([nv], { processFile, onError });
+			const { result } = await renderCore([nv], { processThumbnailFile });
 
-			const fileSlow = new File(["slow"], "slow.mp4", { type: "video/mp4" });
-			const fileFast = new File(["fast"], "fast.mp4", { type: "video/mp4" });
+			const thumb = thumbFile();
 
 			await act(async () => {
-				const p1 = result.current.handlers.changeFile("temp_target", fileSlow);
-				const p2 = result.current.handlers.changeFile("temp_target", fileFast);
-				dFast.resolve(fileFast);
-				dSlow.resolve(fileSlow);
-				await Promise.all([p1, p2]);
+				const setting = result.current.handlers.setThumbnailFromFile(
+					"temp_target",
+					thumb,
+				);
+				await result.current.handlers.removeThumbnail("temp_target");
+				dThumb.resolve(thumb);
+				await setting;
 			});
 
-			expect(onError).not.toHaveBeenCalled();
+			expect(firstVideo(result).thumbnail).toBeNull();
 		});
 
-		it("epoch stale な操作は processFile 完了後に uploadFile へ到達しない", async () => {
-			const dSlow = createDeferred<File>();
-			const dFast = createDeferred<File>();
-			let processCall = 0;
-			const processFile = vi.fn(
-				async (_f: File) => [dSlow, dFast][processCall++].promise,
-			);
-			const uploadFile = vi.fn(async () => ({
-				uploadRef: "https://example.com/v.mp4",
-			}));
-			const onError = vi.fn();
+		it("[stale] 既存動画の差し替えで捨てたサムネイルが、加工の完了後に戻らない", async () => {
+			const dThumb = createDeferred<File>();
+			const processThumbnailFile = vi.fn(async (_f: File) => dThumb.promise);
+			const { uploadFile, callsOf } = createUploadSpy();
 
-			const nv = makeNewVideo({ tempId: "temp_target" });
-			const { result } = await renderCore([nv], {
-				processFile,
+			const ex = makeExistingVideo({ tempId: "temp_ex" });
+			const { result } = await renderCore([ex], {
+				processThumbnailFile,
 				uploadFile,
-				onError,
 			});
 
-			const fileSlow = new File(["slow"], "slow.mp4", { type: "video/mp4" });
-			const fileFast = new File(["fast"], "fast.mp4", { type: "video/mp4" });
+			const thumb = thumbFile();
 
 			await act(async () => {
-				const p1 = result.current.handlers.changeFile("temp_target", fileSlow);
-				const p2 = result.current.handlers.changeFile("temp_target", fileFast);
-				// 後発の processFile を先に解決
-				dFast.resolve(fileFast);
-				// 先発の processFile も解決 — しかし epoch stale なので uploadFile には到達しない
-				dSlow.resolve(fileSlow);
-				await Promise.all([p1, p2]);
+				const setting = result.current.handlers.setThumbnailFromFile(
+					"temp_ex",
+					thumb,
+				);
+				// 差し替えはサムネイルを捨てる。捨てた側が後の操作なので、加工待ちの
+				// 設定操作は無効になる
+				await result.current.handlers.changeFile("temp_ex", videoFile("n.mp4"));
+				dThumb.resolve(thumb);
+				await setting;
 			});
 
-			// uploadFile は後発の1回だけ呼ばれる（先発は epoch stale で到達しない）
-			expect(uploadFile).toHaveBeenCalledTimes(1);
-			expect(onError).not.toHaveBeenCalled();
-			expect((result.current.raw.videos[0] as VideoNew).file.name).toBe(
-				"fast.mp4",
-			);
+			expect(firstVideo(result).thumbnail).toBeNull();
+			expect(callsOf("thumbnail")).toHaveLength(0);
 		});
 
-		it("handleSetThumbnailFromFile: 同一 tempId への連続呼び出しで後発が勝つ", async () => {
+		it("[stale] 削除した tempId が復元されても、削除前の加工結果は書き戻されない", async () => {
+			const dFile = createDeferred<File>();
+			const processFile = vi.fn(async (_f: File) => dFile.promise);
+
+			const nv = makeNewVideo({ tempId: "temp_reused" });
+			const { result, ref } = await renderCore([nv], { processFile });
+
+			const changed = videoFile("changed.mp4");
+			const restored = makeNewVideo({ tempId: "temp_reused" });
+
+			await act(async () => {
+				const changing = result.current.handlers.changeFile(
+					"temp_reused",
+					changed,
+				);
+				await result.current.handlers.delete("temp_reused");
+				// handlers を介さず、同じ tempId で別の項目を復元する（reset 相当）
+				ref.adapter?.setVideos([restored]);
+				dFile.resolve(changed);
+				await changing;
+			});
+
+			expect(firstVideo(result).file).toBe(restored.file);
+		});
+
+		it("[stale] 同一 tempId への連続 setThumbnailFromFile は後発が勝つ", async () => {
 			const dSlow = createDeferred<File>();
 			const dFast = createDeferred<File>();
 			let call = 0;
@@ -689,8 +748,8 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const nv = makeNewVideo({ tempId: "temp_target" });
 			const { result } = await renderCore([nv], { processThumbnailFile });
 
-			const thumbSlow = new File(["slow"], "slow.jpg", { type: "image/jpeg" });
-			const thumbFast = new File(["fast"], "fast.jpg", { type: "image/jpeg" });
+			const thumbSlow = thumbFile("slow.jpg");
+			const thumbFast = thumbFile("fast.jpg");
 
 			await act(async () => {
 				const p1 = result.current.handlers.setThumbnailFromFile(
@@ -706,434 +765,697 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				await Promise.all([p1, p2]);
 			});
 
-			const video = result.current.raw.videos[0] as VideoNew;
-			expect(video.thumbnail).not.toBeNull();
-			expect(video.thumbnail!.source).toBe(ThumbnailSource.Upload);
-			if (video.thumbnail!.source === ThumbnailSource.Upload) {
-				expect(video.thumbnail!.file.name).toBe("fast.jpg");
+			const thumbnail = firstVideo(result).thumbnail;
+			expect(thumbnail?.source).toBe(ThumbnailSource.Upload);
+			if (thumbnail?.source === ThumbnailSource.Upload) {
+				expect(thumbnail.file.name).toBe("fast.jpg");
 			}
 		});
 	});
 
-	describe("uploadFile", () => {
-		it("uploadFile 成功時に VideoNew.uploadRef が設定されること", async () => {
-			const uploadFile = vi.fn(async () => ({
-				uploadRef: "https://s3.example.com/uploaded.mp4",
-			}));
+	describe("ノンブロッキング化", () => {
+		it("転送の完了を待たずに項目が入り、uploadState が pending になる", async () => {
+			const { uploadFile, calls } = createUploadSpy();
 			const { result } = await renderCore([], { uploadFile });
+
+			let ok = false;
 			await act(async () => {
-				await result.current.handlers.add(
-					new File(["v"], "a.mp4", { type: "video/mp4" }),
-				);
+				ok = await result.current.handlers.add(videoFile());
 			});
-			const video = result.current.raw.videos[0] as VideoNew;
-			expect(video.uploadRef).toBe("https://s3.example.com/uploaded.mp4");
+
+			expect(ok).toBe(true);
+			expect(result.current.raw.videos).toHaveLength(1);
+			expect(firstVideo(result).uploadRef).toBeUndefined();
+			expect(result.current.items[0].uploadState.video).toEqual({
+				status: "pending",
+				progress: undefined,
+			});
+			expect(result.current.uploads.pending).toEqual([
+				result.current.raw.videos[0].tempId,
+			]);
+			expect(calls).toHaveLength(1);
 		});
 
-		it("uploadFile 未指定時は uploadRef が設定されないこと", async () => {
+		it("転送が解決すると uploadRef が書き戻され pending から落ちる", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			await act(async () => {
+				calls[0].resolve({ uploadRef: "ref-video" });
+			});
+
+			expect(firstVideo(result).uploadRef).toBe("ref-video");
+			expect(result.current.uploads.pending).toEqual([]);
+			expect(result.current.items[0].uploadState).toEqual({});
+		});
+
+		it("uploadFile 未設定なら転送は起きず項目だけ入る", async () => {
 			const { result } = await renderCore([]);
 			await act(async () => {
-				await result.current.handlers.add(
-					new File(["v"], "a.mp4", { type: "video/mp4" }),
-				);
+				await result.current.handlers.add(videoFile());
 			});
-			const video = result.current.raw.videos[0] as VideoNew;
-			expect(video.uploadRef).toBeUndefined();
+			expect(result.current.raw.videos).toHaveLength(1);
+			expect(firstVideo(result).uploadRef).toBeUndefined();
+			expect(result.current.uploads.pending).toEqual([]);
 		});
 
-		it("uploadFile 失敗時は onError(upload_file) + false を返し動画は追加されないこと", async () => {
+		it("転送が失敗しても項目は残り、failed と onError で伝わる", async () => {
 			const onError = vi.fn();
-			const uploadFile = vi.fn(async () => {
-				throw new Error("upload boom");
-			});
+			const { uploadFile, calls } = createUploadSpy();
 			const { result } = await renderCore([], { uploadFile, onError });
-			let ok = true;
+
 			await act(async () => {
-				ok = await result.current.handlers.add(
-					new File(["v"], "a.mp4", { type: "video/mp4" }),
-				);
+				await result.current.handlers.add(videoFile());
 			});
-			expect(ok).toBe(false);
-			expect(result.current.raw.videos).toHaveLength(0);
-			expect(onError).toHaveBeenCalledWith(
-				expect.objectContaining({ type: "upload_file" }),
+			const error = new Error("upload boom");
+			await act(async () => {
+				calls[0].reject(error);
+			});
+
+			const tempId = result.current.raw.videos[0].tempId;
+			expect(result.current.raw.videos).toHaveLength(1);
+			expect(result.current.uploads.failed).toEqual([tempId]);
+			expect(result.current.items[0].uploadState.video).toEqual({
+				status: "failed",
+				error,
+			});
+			expect(onError).toHaveBeenCalledWith({
+				type: "upload",
+				kind: "video",
+				message: "ファイルのアップロードに失敗しました。",
+				cause: error,
+			});
+		});
+
+		it("転送参照を返さない実装は失敗に倒す", async () => {
+			const uploadFile = vi.fn(
+				async () => ({ uploadRef: "" }) as UploadFileResult,
 			);
-		});
+			const { result } = await renderCore([], { uploadFile });
 
-		it("processFile → uploadFile の順で実行されること", async () => {
-			const callOrder: string[] = [];
-			const processFile = vi.fn(async (f: File) => {
-				callOrder.push("process");
-				return f;
-			});
-			const uploadFile = vi.fn(async () => {
-				callOrder.push("upload");
-				return { uploadRef: "https://example.com/v.mp4" };
-			});
-			const { result } = await renderCore([], { processFile, uploadFile });
 			await act(async () => {
-				await result.current.handlers.add(
-					new File(["v"], "a.mp4", { type: "video/mp4" }),
-				);
+				await result.current.handlers.add(videoFile());
 			});
-			expect(callOrder).toEqual(["process", "upload"]);
+
+			expect(result.current.uploads.failed).toHaveLength(1);
 		});
 
-		it("handleFileChange でも uploadFile が実行されること", async () => {
-			const uploadFile = vi.fn(async () => ({
-				uploadRef: "https://s3.example.com/changed.mp4",
-			}));
-			const nv = makeNewVideo({ tempId: "temp_n" });
-			const { result } = await renderCore([nv], { uploadFile });
+		it("processFile の出力が転送に渡される", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const processFile = vi.fn(
+				async (f: File) => new File([f], `resized_${f.name}`, { type: f.type }),
+			);
+			const { result } = await renderCore([], { uploadFile, processFile });
+
 			await act(async () => {
-				await result.current.handlers.changeFile(
-					"temp_n",
-					new File(["v"], "b.mp4", { type: "video/mp4" }),
-				);
+				await result.current.handlers.add(videoFile("v.mp4"));
 			});
-			const video = result.current.raw.videos[0] as VideoNew;
-			expect(video.uploadRef).toBe("https://s3.example.com/changed.mp4");
-			expect(uploadFile).toHaveBeenCalled();
+
+			expect(calls[0].file.name).toBe("resized_v.mp4");
+			await act(async () => {
+				calls[0].resolve({ uploadRef: "ref-1" });
+			});
+			expect(firstVideo(result).uploadRef).toBe("ref-1");
 		});
 
-		it("カスタム uploadFile メッセージが onError に載ること", async () => {
+		it("差し替えでも転送が起動し、書き戻しが成立する", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile("a.mp4"));
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				await result.current.handlers.changeFile(tempId, videoFile("b.mp4"));
+			});
+			await act(async () => {
+				calls[1].resolve({ uploadRef: "ref-changed" });
+			});
+
+			expect(firstVideo(result).uploadRef).toBe("ref-changed");
+			expect(calls[0].ctx.signal.aborted).toBe(true);
+		});
+
+		it("カスタム upload メッセージが kind つきで onError に載る", async () => {
 			const onError = vi.fn();
-			const uploadFile = vi.fn(async () => {
-				throw new Error("fail");
-			});
+			const { uploadFile, calls } = createUploadSpy();
 			const { result } = await renderCore([], {
 				uploadFile,
 				onError,
-				messages: { uploadFile: () => "アップロード失敗（custom）" },
+				messages: { upload: (kind) => `${kind} の転送に失敗（custom）` },
+			});
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
 			});
 			await act(async () => {
-				await result.current.handlers.add(
-					new File(["v"], "a.mp4", { type: "video/mp4" }),
-				);
+				calls[0].reject(new Error("fail"));
 			});
+
 			expect(onError).toHaveBeenCalledWith(
 				expect.objectContaining({
-					type: "upload_file",
-					message: "アップロード失敗（custom）",
+					type: "upload",
+					kind: "video",
+					message: "video の転送に失敗（custom）",
 				}),
 			);
 		});
+
+		it("onError 未設定でも転送失敗でクラッシュしない", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			await act(async () => {
+				calls[0].reject(new Error("fail"));
+			});
+
+			expect(result.current.uploads.failed).toHaveLength(1);
+		});
 	});
 
-	describe("uploadThumbnailFile", () => {
-		it("handleSetThumbnailFromFile で uploadThumbnailFile が実行され uploadRef が設定されること", async () => {
-			const uploadThumbnailFile = vi.fn(async () => ({
-				uploadRef: "https://s3.example.com/thumb.jpg",
-			}));
-			const nv = makeNewVideo({ tempId: "temp_t1" });
-			const { result } = await renderCore([nv], { uploadThumbnailFile });
+	describe("転送スロット", () => {
+		it("サムネイルの転送は kind: thumbnail で発行され、そのスロットへ書き戻す", async () => {
+			const { uploadFile, callsOf } = createUploadSpy();
+			const nv = makeNewVideo({ tempId: "temp_n" });
+			const { result } = await renderCore([nv], { uploadFile });
+
 			await act(async () => {
 				await result.current.handlers.setThumbnailFromFile(
-					"temp_t1",
-					new File(["img"], "thumb.jpg", { type: "image/jpeg" }),
+					"temp_n",
+					thumbFile(),
 				);
 			});
-			const video = result.current.raw.videos[0] as VideoNew;
-			expect(video.thumbnail).not.toBeNull();
-			expect(video.thumbnail!.source).toBe(ThumbnailSource.Upload);
-			if (video.thumbnail!.source === ThumbnailSource.Upload) {
-				expect(video.thumbnail!.uploadRef).toBe(
-					"https://s3.example.com/thumb.jpg",
-				);
+
+			expect(callsOf("thumbnail")).toHaveLength(1);
+
+			await act(async () => {
+				callsOf("thumbnail")[0].resolve({ uploadRef: "ref-thumb" });
+			});
+
+			const thumbnail = firstVideo(result).thumbnail;
+			expect(thumbnail?.uploadRef).toBe("ref-thumb");
+			// 本体スロットは別の転送なのでサムネイルの解決では埋まらない
+			expect(firstVideo(result).uploadRef).toBeUndefined();
+		});
+
+		it("フレームキャプチャは blob を世代トークンにして書き戻す", async () => {
+			const { uploadFile, callsOf } = createUploadSpy();
+			const nv = makeNewVideo({ tempId: "temp_n" });
+			const { result } = await renderCore([nv], { uploadFile });
+
+			const { ThumbnailUtils } = await import("../types/Thumbnail");
+			const captureFrameSpy = vi.spyOn(ThumbnailUtils, "captureFrame");
+			try {
+				captureFrameSpy.mockResolvedValue({
+					source: ThumbnailSource.Frame,
+					blob: new Blob(["img"], { type: "image/jpeg" }),
+					timestamp: 0,
+				});
+
+				await act(async () => {
+					await result.current.handlers.setThumbnailFromFrame(
+						"temp_n",
+						document.createElement("video"),
+					);
+				});
+
+				// 転送には blob から作った File が渡る
+				expect(callsOf("thumbnail")[0].file.name).toBe("thumbnail.jpg");
+
+				await act(async () => {
+					callsOf("thumbnail")[0].resolve({ uploadRef: "ref-frame" });
+				});
+
+				expect(firstVideo(result).thumbnail?.uploadRef).toBe("ref-frame");
+			} finally {
+				captureFrameSpy.mockRestore();
 			}
 		});
 
-		it("uploadThumbnailFile 未指定時は uploadRef なしでサムネイル設定されること", async () => {
-			const nv = makeNewVideo({ tempId: "temp_t2" });
-			const { result } = await renderCore([nv]);
+		it("本体の転送中にサムネイルを設定しても本体の転送が破棄されない", async () => {
+			const { uploadFile, calls, callsOf } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
 			await act(async () => {
-				await result.current.handlers.setThumbnailFromFile(
-					"temp_t2",
-					new File(["img"], "thumb.jpg", { type: "image/jpeg" }),
-				);
+				await result.current.handlers.add(videoFile());
 			});
-			const video = result.current.raw.videos[0] as VideoNew;
-			expect(video.thumbnail).not.toBeNull();
-			if (video.thumbnail!.source === ThumbnailSource.Upload) {
-				expect(video.thumbnail!.uploadRef).toBeUndefined();
-			}
+			const tempId = result.current.raw.videos[0].tempId;
+
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(tempId, thumbFile());
+			});
+
+			expect(callsOf("video")).toHaveLength(1);
+			expect(callsOf("thumbnail")).toHaveLength(1);
+			expect(calls[0].ctx.signal.aborted).toBe(false);
+
+			await act(async () => {
+				callsOf("video")[0].resolve({ uploadRef: "ref-video" });
+				callsOf("thumbnail")[0].resolve({ uploadRef: "ref-thumb" });
+			});
+
+			expect(firstVideo(result).uploadRef).toBe("ref-video");
+			expect(firstVideo(result).thumbnail?.uploadRef).toBe("ref-thumb");
 		});
 
-		it("uploadThumbnailFile 失敗時は onError(upload_thumbnail_file) + false を返すこと", async () => {
-			const onError = vi.fn();
-			const uploadThumbnailFile = vi.fn(async () => {
-				throw new Error("thumb upload boom");
-			});
-			const nv = makeNewVideo({ tempId: "temp_t3" });
-			const { result } = await renderCore([nv], {
-				uploadThumbnailFile,
-				onError,
-			});
-			let ok = true;
+		it("同じスロットの再発行は先行の転送を中断し、その結果を捨てる", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
 			await act(async () => {
-				ok = await result.current.handlers.setThumbnailFromFile(
-					"temp_t3",
-					new File(["img"], "thumb.jpg", { type: "image/jpeg" }),
+				await result.current.handlers.add(videoFile("1.mp4"));
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				await result.current.handlers.changeFile(tempId, videoFile("2.mp4"));
+			});
+
+			expect(calls).toHaveLength(2);
+			expect(calls[0].ctx.signal.aborted).toBe(true);
+
+			await act(async () => {
+				calls[0].resolve({ uploadRef: "ref-stale" });
+				calls[1].resolve({ uploadRef: "ref-current" });
+			});
+
+			expect(firstVideo(result).uploadRef).toBe("ref-current");
+		});
+
+		it("handlers を介さない差し替えで転送結果が破棄される", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result, ref } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			const current = firstVideo(result);
+
+			// adapter へ直接書き込むと台帳のレコードは自分のままなので、
+			// 破棄の判定は転送したオブジェクトとの同一性だけが担う
+			await act(async () => {
+				ref.adapter?.setVideos([
+					{ ...current, file: videoFile("other.mp4") } satisfies VideoNew,
+				]);
+			});
+			await act(async () => {
+				calls[0].resolve({ uploadRef: "ref-discarded" });
+			});
+
+			expect(firstVideo(result).uploadRef).toBeUndefined();
+		});
+
+		it("既存動画の差し替えでサムネイルの転送が中断される", async () => {
+			const { uploadFile, calls, callsOf } = createUploadSpy();
+			const ex = makeExistingVideo({ tempId: "temp_ex" });
+			const { result } = await renderCore([ex], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(
+					"temp_ex",
+					thumbFile(),
 				);
 			});
-			expect(ok).toBe(false);
+			expect(callsOf("thumbnail")).toHaveLength(1);
+
+			await act(async () => {
+				await result.current.handlers.changeFile("temp_ex", videoFile("n.mp4"));
+			});
+
+			expect(calls[0].ctx.signal.aborted).toBe(true);
 			expect(result.current.raw.videos[0].thumbnail).toBeNull();
-			expect(onError).toHaveBeenCalledWith(
-				expect.objectContaining({ type: "upload_thumbnail_file" }),
-			);
+			expect(result.current.uploads.pending).toEqual(["temp_ex"]);
 		});
 
-		it("uploadThumbnailFile 失敗 + onError なしでクラッシュしないこと", async () => {
-			const uploadThumbnailFile = vi.fn(async () => {
-				throw new Error("fail");
-			});
-			const nv = makeNewVideo({ tempId: "temp_t4" });
-			const { result } = await renderCore([nv], { uploadThumbnailFile });
-			let ok = true;
+		it("削除で両スロットの転送が中断され failed も落ちる", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
 			await act(async () => {
-				ok = await result.current.handlers.setThumbnailFromFile(
-					"temp_t4",
-					new File(["img"], "thumb.jpg", { type: "image/jpeg" }),
+				await result.current.handlers.add(videoFile());
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(tempId, thumbFile());
+			});
+			await act(async () => {
+				calls[1].reject(new Error("thumb boom"));
+			});
+			expect(result.current.uploads.failed).toEqual([tempId]);
+
+			await act(async () => {
+				await result.current.handlers.delete(tempId);
+			});
+
+			expect(calls[0].ctx.signal.aborted).toBe(true);
+			expect(result.current.uploads.pending).toEqual([]);
+			expect(result.current.uploads.failed).toEqual([]);
+		});
+
+		it("サムネイル削除でそのスロットの転送が中断される", async () => {
+			const { uploadFile, callsOf } = createUploadSpy();
+			const ex = makeExistingVideo({ tempId: "temp_ex" });
+			const { result } = await renderCore([ex], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(
+					"temp_ex",
+					thumbFile(),
 				);
 			});
-			expect(ok).toBe(false);
+			await act(async () => {
+				await result.current.handlers.removeThumbnail("temp_ex");
+			});
+
+			expect(callsOf("thumbnail")[0].ctx.signal.aborted).toBe(true);
+			expect(result.current.uploads.pending).toEqual([]);
+		});
+
+		it("unmount で走行中の転送が中断される", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result, unmount } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			unmount();
+
+			expect(calls[0].ctx.signal.aborted).toBe(true);
 		});
 	});
 
-	describe("epoch — orphan cleanup (handleFileChange / handleSetThumbnail)", () => {
-		it("handleFileChange: upload await 中に epoch が stale → orphan 通知される", async () => {
-			const dProcess = createDeferred<File>();
-			const dUpload = createDeferred<{ uploadRef: string }>();
-			const processFile = vi.fn(async (_f: File) => dProcess.promise);
-			const uploadFile = vi.fn(async () => dUpload.promise);
-			const onOrphanedUpload = vi.fn();
+	describe("進捗", () => {
+		it("onProgress の報告が uploadState に載る", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
 
-			const nv = makeNewVideo({ tempId: "temp_target" });
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			await act(async () => {
+				calls[0].ctx.onProgress(0.42);
+			});
+
+			expect(result.current.items[0].uploadState.video).toEqual({
+				status: "pending",
+				progress: 0.42,
+			});
+		});
+
+		it("範囲外と非有限値は丸める / 無視する", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			await act(async () => {
+				calls[0].ctx.onProgress(1.5);
+			});
+			expect(result.current.items[0].uploadState.video).toEqual({
+				status: "pending",
+				progress: 1,
+			});
+
+			await act(async () => {
+				calls[0].ctx.onProgress(Number.NaN);
+			});
+			expect(result.current.items[0].uploadState.video).toEqual({
+				status: "pending",
+				progress: 1,
+			});
+		});
+
+		it("後発の転送へ引き継いだ進捗は、先行の転送の settle で消えない", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile("1.mp4"));
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				calls[0].ctx.onProgress(0.4);
+			});
+
+			// 同じスロットへ再発行すると先行の転送は中断される
+			await act(async () => {
+				await result.current.handlers.changeFile(tempId, videoFile("2.mp4"));
+			});
+			await act(async () => {
+				calls[1].ctx.onProgress(0.7);
+			});
+			expect(result.current.items[0].uploadState.video).toEqual({
+				status: "pending",
+				progress: 0.7,
+			});
+
+			// 中断された先行の転送が遅れて settle しても、後発の進捗は巻き戻らない
+			await act(async () => {
+				calls[0].resolve({ uploadRef: "ref-stale" });
+			});
+
+			expect(result.current.items[0].uploadState.video).toEqual({
+				status: "pending",
+				progress: 0.7,
+			});
+		});
+
+		it("サムネイルスロットでも進捗の引き継ぎが成立する", async () => {
+			const { uploadFile, callsOf } = createUploadSpy();
+			const nv = makeNewVideo({ tempId: "temp_n", uploadRef: "ref-video" });
+			const { result } = await renderCore([nv], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(
+					"temp_n",
+					thumbFile("1.jpg"),
+				);
+			});
+			await act(async () => {
+				callsOf("thumbnail")[0].ctx.onProgress(0.3);
+			});
+
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(
+					"temp_n",
+					thumbFile("2.jpg"),
+				);
+			});
+			await act(async () => {
+				callsOf("thumbnail")[1].ctx.onProgress(0.9);
+			});
+
+			await act(async () => {
+				callsOf("thumbnail")[0].resolve({ uploadRef: "ref-stale-thumb" });
+			});
+
+			expect(result.current.items[0].uploadState.thumbnail).toEqual({
+				status: "pending",
+				progress: 0.9,
+			});
+			expect(firstVideo(result).thumbnail?.uploadRef).toBeUndefined();
+		});
+
+		it("本体とサムネイルの進捗は別々に出る", async () => {
+			const { uploadFile, callsOf } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(tempId, thumbFile());
+			});
+			await act(async () => {
+				callsOf("video")[0].ctx.onProgress(0.2);
+				callsOf("thumbnail")[0].ctx.onProgress(0.8);
+			});
+
+			expect(result.current.items[0].uploadState).toEqual({
+				video: { status: "pending", progress: 0.2 },
+				thumbnail: { status: "pending", progress: 0.8 },
+			});
+		});
+	});
+
+	describe("self-heal と孤児回収", () => {
+		it("転送参照を持たない初期値の項目に転送を発行する", async () => {
+			const uploadFile = vi.fn(async () => ({ uploadRef: "ref-healed" }));
+			// handlers を通っていない項目。unmount で台帳が失われてもフォーム state には
+			// 項目が残るため、remount 後に「転送されないまま」にならないことを表す
+			const nv = makeNewVideo({ tempId: "temp_initial" });
+			expect(nv.uploadRef).toBeUndefined();
+
+			const { result } = await renderCore([nv], { uploadFile });
+
+			await vi.waitFor(() => {
+				expect(firstVideo(result).uploadRef).toBe("ref-healed");
+			});
+			expect(uploadFile).toHaveBeenCalledOnce();
+		});
+
+		it("走行中のスロットへは再発行しない", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const nv = makeNewVideo({ tempId: "temp_pending" });
+			const { result } = await renderCore([nv], { uploadFile });
+
+			expect(calls).toHaveLength(1);
+
+			// 台帳が動くと再照合が走るが、走行中のスロットは触らない
+			await act(async () => {
+				calls[0].ctx.onProgress(0.5);
+			});
+
+			expect(calls).toHaveLength(1);
+			expect(result.current.uploads.pending).toEqual(["temp_pending"]);
+		});
+
+		it("失敗したスロットへは再発行しない", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const nv = makeNewVideo({ tempId: "temp_failed" });
+			const { result } = await renderCore([nv], { uploadFile });
+
+			await act(async () => {
+				calls[0].reject(new Error("boom"));
+			});
+
+			expect(calls).toHaveLength(1);
+			expect(result.current.uploads.failed).toEqual(["temp_failed"]);
+		});
+
+		it("ファイルを選び直すと失敗済みのスロットにも再発行される", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const nv = makeNewVideo({ tempId: "temp_retry_by_change" });
+			const { result } = await renderCore([nv], { uploadFile });
+
+			await act(async () => {
+				calls[0].reject(new Error("boom"));
+			});
+			await act(async () => {
+				await result.current.handlers.changeFile(
+					"temp_retry_by_change",
+					videoFile("b.mp4"),
+				);
+			});
+
+			expect(calls).toHaveLength(2);
+			expect(result.current.uploads.failed).toEqual([]);
+		});
+
+		it("フォームから消えた項目の failed は uploads.failed から落ちる", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result, ref } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				calls[0].reject(new Error("boom"));
+			});
+			expect(result.current.uploads.failed).toEqual([tempId]);
+
+			// handlers を介さずに項目を落とす（form.reset 相当）
+			await act(async () => {
+				ref.adapter?.setVideos([]);
+			});
+
+			expect(result.current.uploads.failed).toEqual([]);
+		});
+
+		it("反映待ちの追加直後の転送は孤児回収で中断されない", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+
+			expect(calls[0].ctx.signal.aborted).toBe(false);
+			expect(result.current.uploads.pending).toHaveLength(1);
+		});
+
+		it("read のたびに参照が変わる adapter は上限まで試して失敗に倒す", async () => {
+			const uploadFile = vi.fn(async () => ({ uploadRef: "ref" }));
+			const nv = makeNewVideo({ tempId: "temp_unstable" });
 			const { result } = await renderCore([nv], {
-				processFile,
 				uploadFile,
-				onOrphanedUpload,
+				unstableReads: true,
 			});
 
-			const file = new File(["v"], "a.mp4", { type: "video/mp4" });
+			await vi.waitFor(() => {
+				expect(result.current.uploads.failed).toEqual(["temp_unstable"]);
+			});
+			// 上限（自己破棄 2 回）で止まる。無制限に撃ち続けない
+			expect(uploadFile.mock.calls.length).toBeLessThanOrEqual(2);
+			expect(firstVideo(result).uploadRef).toBeUndefined();
+		});
+	});
+
+	describe("uploads.retry", () => {
+		it("failed スロットだけを再送して true を返す", async () => {
+			const { uploadFile, calls, callsOf } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
 
 			await act(async () => {
-				const changing = result.current.handlers.changeFile(
-					"temp_target",
-					file,
-				);
-				dProcess.resolve(file);
-				await new Promise((r) => setTimeout(r, 0));
-
-				// upload 完了前に動画を削除 → upload 済み URL は orphan になる
-				await result.current.handlers.delete("temp_target");
-
-				dUpload.resolve({
-					uploadRef: "https://s3.example.com/orphan.mp4",
-				});
-				await changing;
+				await result.current.handlers.add(videoFile());
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(tempId, thumbFile());
+			});
+			await act(async () => {
+				callsOf("thumbnail")[0].reject(new Error("thumb boom"));
 			});
 
-			expect(onOrphanedUpload).toHaveBeenCalledWith(
-				"https://s3.example.com/orphan.mp4",
-			);
-		});
-
-		it("handleFileChange: changeFile が changed:false → uploadRef が orphan 通知される", async () => {
-			// adapter.setVideos で直接除去すると epoch は stale にならない（bumpEpoch を経由しない）ため
-			// ops.changeFile が changed:false を返すパスに到達する
-			const dProcess = createDeferred<File>();
-			const uploadFile = vi.fn(async () => ({
-				uploadRef: "https://s3.example.com/orphan2.mp4",
-			}));
-			const onOrphanedUpload = vi.fn();
-
-			const nv = makeNewVideo({ tempId: "temp_cf" });
-			const ref: { adapter?: VideoFieldAdapter } = {};
-			const { result } = await renderHook(() => {
-				const { adapter } = useFakeAdapter([nv]);
-				ref.adapter = adapter;
-				return useMultiVideoCore({
-					adapter,
-					processFile: async (_f: File) => dProcess.promise,
-					uploadOnSelect: { uploadFile, onOrphanedUpload },
-				});
+			let retried = false;
+			await act(async () => {
+				retried = result.current.uploads.retry(tempId);
 			});
+
+			expect(retried).toBe(true);
+			expect(callsOf("thumbnail")).toHaveLength(2);
+			expect(callsOf("video")).toHaveLength(1);
+			expect(calls[0].ctx.signal.aborted).toBe(false);
 
 			await act(async () => {
-				const changing = result.current.handlers.changeFile(
-					"temp_cf",
-					new File(["v"], "b.mp4", { type: "video/mp4" }),
-				);
-				ref.adapter!.setVideos([]);
-				dProcess.resolve(new File(["v"], "b.mp4", { type: "video/mp4" }));
-				await changing;
+				callsOf("thumbnail")[1].resolve({ uploadRef: "ref-retried" });
 			});
-
-			expect(onOrphanedUpload).toHaveBeenCalledWith(
-				"https://s3.example.com/orphan2.mp4",
-			);
+			expect(firstVideo(result).thumbnail?.uploadRef).toBe("ref-retried");
 		});
 
-		it("handleSetThumbnailFromFrame: upload await 中に epoch が stale → orphan 通知される", async () => {
-			const dUpload = createDeferred<{ uploadRef: string }>();
-			const uploadThumbnailFile = vi.fn(async () => dUpload.promise);
-			const onOrphanedUpload = vi.fn();
-
-			const nv = makeNewVideo({ tempId: "temp_target" });
-			const { result } = await renderCore([nv], {
-				uploadThumbnailFile,
-				onOrphanedUpload,
-			});
-
-			const { ThumbnailUtils } = await import("../types/Thumbnail");
-			const captureFrameSpy = vi.spyOn(ThumbnailUtils, "captureFrame");
-			try {
-				captureFrameSpy.mockResolvedValue({
-					source: ThumbnailSource.Frame,
-					blob: new Blob(["img"], { type: "image/jpeg" }),
-					timestamp: 0,
-				});
-
-				const videoEl = document.createElement("video");
-
-				await act(async () => {
-					const setting = result.current.handlers.setThumbnailFromFrame(
-						"temp_target",
-						videoEl,
-					);
-					await new Promise((r) => setTimeout(r, 0));
-					await result.current.handlers.delete("temp_target");
-
-					dUpload.resolve({
-						uploadRef: "https://s3.example.com/orphan-thumb.jpg",
-					});
-					await setting;
-				});
-
-				expect(onOrphanedUpload).toHaveBeenCalledWith(
-					"https://s3.example.com/orphan-thumb.jpg",
-				);
-			} finally {
-				captureFrameSpy.mockRestore();
-			}
-		});
-
-		it("handleSetThumbnailFromFrame: updateThumbnail 失敗 → uploadRef が orphan 通知される", async () => {
-			const uploadThumbnailFile = vi.fn(async () => ({
-				uploadRef: "https://s3.example.com/orphan-thumb2.jpg",
-			}));
-			const onOrphanedUpload = vi.fn();
-
-			const nv = makeNewVideo({ tempId: "temp_target" });
-
-			const ref: { adapter?: VideoFieldAdapter } = {};
-			const { result } = await renderHook(() => {
-				const { adapter } = useFakeAdapter([nv]);
-				ref.adapter = adapter;
-				return useMultiVideoCore({
-					adapter,
-					uploadOnSelect: { uploadThumbnailFile, onOrphanedUpload },
-				});
-			});
-
-			const { ThumbnailUtils } = await import("../types/Thumbnail");
-			const captureFrameSpy = vi.spyOn(ThumbnailUtils, "captureFrame");
-			try {
-				captureFrameSpy.mockResolvedValue({
-					source: ThumbnailSource.Frame,
-					blob: new Blob(["img"], { type: "image/jpeg" }),
-					timestamp: 0,
-				});
-
-				const videoEl = document.createElement("video");
-
-				await act(async () => {
-					const setting = result.current.handlers.setThumbnailFromFrame(
-						"temp_target",
-						videoEl,
-					);
-					ref.adapter!.setVideos([]);
-					await setting;
-				});
-
-				expect(onOrphanedUpload).toHaveBeenCalledWith(
-					"https://s3.example.com/orphan-thumb2.jpg",
-				);
-			} finally {
-				captureFrameSpy.mockRestore();
-			}
-		});
-
-		it("handleSetThumbnailFromFile: upload await 中に epoch が stale → orphan 通知される", async () => {
-			const dProcess = createDeferred<File>();
-			const dUpload = createDeferred<{ uploadRef: string }>();
-			const processThumbnailFile = vi.fn(async (_f: File) => dProcess.promise);
-			const uploadThumbnailFile = vi.fn(async () => dUpload.promise);
-			const onOrphanedUpload = vi.fn();
-
-			const nv = makeNewVideo({ tempId: "temp_target" });
-			const { result } = await renderCore([nv], {
-				processThumbnailFile,
-				uploadThumbnailFile,
-				onOrphanedUpload,
-			});
-
-			const thumb = new File(["t"], "t.jpg", { type: "image/jpeg" });
+		it("failed スロットが無ければ false を返し何も発行しない", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
 
 			await act(async () => {
-				const setting = result.current.handlers.setThumbnailFromFile(
-					"temp_target",
-					thumb,
-				);
-				// processThumbnailFile を resolve → epoch check 通過 → upload 開始
-				dProcess.resolve(thumb);
-				await new Promise((r) => setTimeout(r, 0));
+				await result.current.handlers.add(videoFile());
+			});
+			const tempId = result.current.raw.videos[0].tempId;
 
-				// upload await 中に epoch を bump
-				await result.current.handlers.delete("temp_target");
-
-				dUpload.resolve({
-					uploadRef: "https://s3.example.com/orphan-thumb3.jpg",
-				});
-				await setting;
+			let retried = true;
+			await act(async () => {
+				retried = result.current.uploads.retry(tempId);
 			});
 
-			expect(onOrphanedUpload).toHaveBeenCalledWith(
-				"https://s3.example.com/orphan-thumb3.jpg",
-			);
+			expect(retried).toBe(false);
+			expect(calls).toHaveLength(1);
 		});
 
-		it("handleSetThumbnailFromFile: updateThumbnail 失敗 → uploadRef が orphan 通知される", async () => {
-			const uploadThumbnailFile = vi.fn(async () => ({
-				uploadRef: "https://s3.example.com/orphan-thumb4.jpg",
-			}));
-			const onOrphanedUpload = vi.fn();
-
-			const nv = makeNewVideo({ tempId: "temp_target" });
-
-			const ref: { adapter?: VideoFieldAdapter } = {};
-			const { result } = await renderHook(() => {
-				const { adapter } = useFakeAdapter([nv]);
-				ref.adapter = adapter;
-				return useMultiVideoCore({
-					adapter,
-					uploadOnSelect: { uploadThumbnailFile, onOrphanedUpload },
-				});
+		it("不明な tempId は false", async () => {
+			const { uploadFile } = createUploadSpy();
+			const { result } = await renderCore([makeNewVideo({ tempId: "a" })], {
+				uploadFile,
 			});
-
-			await act(async () => {
-				const setting = result.current.handlers.setThumbnailFromFile(
-					"temp_target",
-					new File(["t"], "t.jpg", { type: "image/jpeg" }),
-				);
-				ref.adapter!.setVideos([]);
-				await setting;
-			});
-
-			expect(onOrphanedUpload).toHaveBeenCalledWith(
-				"https://s3.example.com/orphan-thumb4.jpg",
-			);
+			expect(result.current.uploads.retry("unknown")).toBe(false);
 		});
 	});
 
@@ -1148,19 +1470,13 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				const { adapter, validate } = useFakeAdapter([]);
 				ref.adapter = adapter;
 				ref.validate = validate;
-				return useMultiVideoCore({
-					adapter,
-					onError,
-				});
+				return useMultiVideoCore({ adapter, onError });
 			});
 
-			// validate を throw するように変更
 			ref.validate!.mockRejectedValueOnce(new Error("schema explosion"));
 
 			await act(async () => {
-				await result.current.handlers.add(
-					new File(["v"], "a.mp4", { type: "video/mp4" }),
-				);
+				await result.current.handlers.add(videoFile());
 			});
 
 			expect(onError).toHaveBeenCalledWith(
@@ -1174,20 +1490,19 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 	describe("tempId 不存在時の early return", () => {
 		it("handleFileChange: 存在しない tempId で false が返り副作用がない", async () => {
-			const uploadFile = vi.fn(async () => ({
-				uploadRef: "https://example.com/v.mp4",
-			}));
+			const { uploadFile, calls } = createUploadSpy();
 			const nv = makeNewVideo({ tempId: "temp_n" });
 			const { result } = await renderCore([nv], { uploadFile });
+			const callsBefore = calls.length;
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.changeFile(
 					"does-not-exist",
-					new File(["v"], "x.mp4", { type: "video/mp4" }),
+					videoFile("x.mp4"),
 				);
 			});
 			expect(ok).toBe(false);
-			expect(uploadFile).not.toHaveBeenCalled();
+			expect(calls).toHaveLength(callsBefore);
 			expect(result.current.raw.videos).toHaveLength(1);
 		});
 
@@ -1216,113 +1531,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		});
 	});
 
-	describe("onOrphanedUpload", () => {
-		it("handleAdd: 同時 add で maxVideos 競合 → 後発の uploadRef が orphan 通知される", async () => {
-			const d1 = createDeferred<File>();
-			const d2 = createDeferred<File>();
-			let call = 0;
-			const processFile = vi.fn(async (_f: File) => [d1, d2][call++].promise);
-			const uploadFile = vi.fn(async () => ({
-				uploadRef: "https://s3.example.com/orphan.mp4",
-			}));
-			const onOrphanedUpload = vi.fn();
-
-			const { result } = await renderCore([], {
-				maxVideos: 1,
-				processFile,
-				uploadFile,
-				onOrphanedUpload,
-			});
-
-			const fileA = new File(["a"], "a.mp4", { type: "video/mp4" });
-			const fileB = new File(["b"], "b.mp4", { type: "video/mp4" });
-
-			await act(async () => {
-				const p1 = result.current.handlers.add(fileA);
-				const p2 = result.current.handlers.add(fileB);
-				d1.resolve(fileA);
-				d2.resolve(fileB);
-				await Promise.all([p1, p2]);
-			});
-
-			expect(result.current.raw.videos).toHaveLength(1);
-			expect(onOrphanedUpload).toHaveBeenCalledWith(
-				"https://s3.example.com/orphan.mp4",
-			);
-		});
-
-		it("onOrphanedUpload 未設定でも orphan 時にクラッシュしない", async () => {
-			const d1 = createDeferred<File>();
-			const d2 = createDeferred<File>();
-			let call = 0;
-			const processFile = vi.fn(async (_f: File) => [d1, d2][call++].promise);
-			const uploadFile = vi.fn(async () => ({
-				uploadRef: "https://s3.example.com/orphan.mp4",
-			}));
-
-			const { result } = await renderCore([], {
-				maxVideos: 1,
-				processFile,
-				uploadFile,
-			});
-
-			const fileA = new File(["a"], "a.mp4", { type: "video/mp4" });
-			const fileB = new File(["b"], "b.mp4", { type: "video/mp4" });
-
-			await act(async () => {
-				const p1 = result.current.handlers.add(fileA);
-				const p2 = result.current.handlers.add(fileB);
-				d1.resolve(fileA);
-				d2.resolve(fileB);
-				await Promise.all([p1, p2]);
-			});
-
-			expect(result.current.raw.videos).toHaveLength(1);
-		});
-
-		it("uploadFile 未指定なら orphan 通知は飛ばない", async () => {
-			const d1 = createDeferred<File>();
-			const d2 = createDeferred<File>();
-			let call = 0;
-			const processFile = vi.fn(async (_f: File) => [d1, d2][call++].promise);
-			const onOrphanedUpload = vi.fn();
-
-			const { result } = await renderCore([], {
-				maxVideos: 1,
-				processFile,
-				onOrphanedUpload,
-			});
-
-			const fileA = new File(["a"], "a.mp4", { type: "video/mp4" });
-			const fileB = new File(["b"], "b.mp4", { type: "video/mp4" });
-
-			await act(async () => {
-				const p1 = result.current.handlers.add(fileA);
-				const p2 = result.current.handlers.add(fileB);
-				d1.resolve(fileA);
-				d2.resolve(fileB);
-				await Promise.all([p1, p2]);
-			});
-
-			expect(onOrphanedUpload).not.toHaveBeenCalled();
-		});
-	});
-
 	describe("onError 未設定時の安全性", () => {
-		it("uploadFile 失敗 + onError なしでクラッシュしないこと", async () => {
-			const uploadFile = vi.fn(async () => {
-				throw new Error("fail");
-			});
-			const { result } = await renderCore([], { uploadFile });
-			let ok = true;
-			await act(async () => {
-				ok = await result.current.handlers.add(
-					new File(["v"], "a.mp4", { type: "video/mp4" }),
-				);
-			});
-			expect(ok).toBe(false);
-		});
-
 		it("processFile 失敗 + onError なしでクラッシュしないこと", async () => {
 			const processFile = vi.fn(async () => {
 				throw new Error("fail");
@@ -1330,9 +1539,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const { result } = await renderCore([], { processFile });
 			let ok = true;
 			await act(async () => {
-				ok = await result.current.handlers.add(
-					new File(["v"], "a.mp4", { type: "video/mp4" }),
-				);
+				ok = await result.current.handlers.add(videoFile());
 			});
 			expect(ok).toBe(false);
 		});
@@ -1341,9 +1548,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const { result } = await renderCore([makeNewVideo()], { maxVideos: 1 });
 			let ok = true;
 			await act(async () => {
-				ok = await result.current.handlers.add(
-					new File(["v"], "a.mp4", { type: "video/mp4" }),
-				);
+				ok = await result.current.handlers.add(videoFile());
 			});
 			expect(ok).toBe(false);
 		});
@@ -1358,9 +1563,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				messages: { maxVideos: (max: number) => `最大${max}本まで（custom）` },
 			});
 			await act(async () => {
-				await result.current.handlers.add(
-					new File(["v"], "b.mp4", { type: "video/mp4" }),
-				);
+				await result.current.handlers.add(videoFile("b.mp4"));
 			});
 			expect(onError).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -1381,9 +1584,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				messages: { processFile: () => "処理失敗（custom）" },
 			});
 			await act(async () => {
-				await result.current.handlers.add(
-					new File(["v"], "b.mp4", { type: "video/mp4" }),
-				);
+				await result.current.handlers.add(videoFile("b.mp4"));
 			});
 			expect(onError).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -1400,9 +1601,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				onError,
 			});
 			await act(async () => {
-				await result.current.handlers.add(
-					new File(["v"], "b.mp4", { type: "video/mp4" }),
-				);
+				await result.current.handlers.add(videoFile("b.mp4"));
 			});
 			expect(onError).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -1420,9 +1619,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				messages: { maxVideos: undefined },
 			});
 			await act(async () => {
-				await result.current.handlers.add(
-					new File(["v"], "b.mp4", { type: "video/mp4" }),
-				);
+				await result.current.handlers.add(videoFile("b.mp4"));
 			});
 			expect(onError).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -1462,35 +1659,31 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			expect(ref.result!.handlers.delete).toBe(handlersAfterFirst.delete);
 		});
 
-		it("uploadOnSelect をインラインオブジェクトで渡しても handlers の identity が変わらない", async () => {
+		it("uploadFile をインラインで渡しても handlers の identity が変わらない", async () => {
 			let renderCount = 0;
 			const ref: { result?: ReturnType<typeof useMultiVideoCore> } = {};
-			const uploadFile = vi.fn(async () => ({
-				uploadRef: "https://example.com/v.mp4",
-			}));
 
-			type Props = {
-				uploadOnSelect: UploadOnSelectOptions;
-			};
+			type Props = { uploadFile: UploadFileFn };
+			const makeUploadFile = (): UploadFileFn => async () => ({
+				uploadRef: "ref",
+			});
 			const { rerender } = await renderHook(
 				(props?: Props) => {
 					renderCount++;
 					const { adapter } = useFakeAdapter([]);
 					const core = useMultiVideoCore({
 						adapter,
-						uploadOnSelect: props?.uploadOnSelect,
+						uploadFile: props?.uploadFile,
 					});
 					ref.result = core;
 					return core;
 				},
-				{
-					initialProps: { uploadOnSelect: { uploadFile } } as Props,
-				},
+				{ initialProps: { uploadFile: makeUploadFile() } as Props },
 			);
 
 			const handlersAfterFirst = ref.result!.handlers;
 
-			await rerender({ uploadOnSelect: { uploadFile } } as Props);
+			await rerender({ uploadFile: makeUploadFile() } as Props);
 
 			expect(renderCount).toBeGreaterThanOrEqual(2);
 			expect(ref.result!.handlers.add).toBe(handlersAfterFirst.add);
@@ -1500,57 +1693,429 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		});
 	});
 
-	describe("prepareForSubmit(options) pass-through", () => {
-		it("render prop の prepareForSubmit(options) が options を core に素通しすること", async () => {
-			const nv = makeNewVideo({
-				tempId: "temp_submit",
-				uploadRef: undefined,
-			});
-			const { result } = await renderCore([nv]);
+	describe("uploads.wait", () => {
+		it("uploadFile 未設定なら待たずに素材を返す", async () => {
+			const nv = makeNewVideo({ tempId: "temp_local" });
+			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
+			const { result } = await renderCore([nv, ex]);
 
-			const uploadFile = vi.fn(async () => ({
-				uploadRef: "https://s3.example.com/on-submit.mp4",
-			}));
-
-			let resolved: Awaited<ReturnType<typeof result.current.prepareForSubmit>>;
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
 			await act(async () => {
-				resolved = await result.current.prepareForSubmit({ uploadFile });
+				waited = await result.current.uploads.wait();
 			});
 
-			expect(uploadFile).toHaveBeenCalledOnce();
-			expect(resolved!.videos[0].uploadedUrl).toBe(
-				"https://s3.example.com/on-submit.mp4",
-			);
+			expect(waited!.ok).toBe(true);
+			if (!waited!.ok) return;
+			expect(waited!.videos).toEqual([
+				{
+					status: VideoFormStatus.New,
+					file: nv.file,
+					tempId: "temp_local",
+					thumbnail: null,
+				},
+				{ status: VideoFormStatus.Existing, id: "id-ex", thumbnail: null },
+			]);
 		});
 
-		it("混在時: on-select 済み項目は prepareForSubmit(options) で二重アップロードされない", async () => {
-			const alreadyUploaded = makeNewVideo({
-				tempId: "temp_already",
-				uploadRef: "https://s3.example.com/already.mp4",
-			});
-			const pending = makeNewVideo({
-				tempId: "temp_pending",
-				uploadRef: undefined,
-			});
-			const { result } = await renderCore([alreadyUploaded, pending]);
+		it("走行中の転送を待ってから素材を返す", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
 
-			const uploadFile = vi.fn(async () => ({
-				uploadRef: "https://s3.example.com/submitted.mp4",
-			}));
-
-			let resolved: Awaited<ReturnType<typeof result.current.prepareForSubmit>>;
 			await act(async () => {
-				resolved = await result.current.prepareForSubmit({ uploadFile });
+				await result.current.handlers.add(videoFile());
 			});
 
-			expect(uploadFile).toHaveBeenCalledOnce();
-			const urls = resolved!.videos.map((v) => v.uploadedUrl);
-			expect(urls).toContain("https://s3.example.com/already.mp4");
-			expect(urls).toContain("https://s3.example.com/submitted.mp4");
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				const waiting = result.current.uploads.wait();
+				calls[0].resolve({ uploadRef: "ref-video" });
+				waited = await waiting;
+			});
+
+			expect(waited!.ok).toBe(true);
+			if (!waited!.ok) return;
+			expect(waited!.videos).toEqual([
+				{
+					status: VideoFormStatus.New,
+					uploadRef: "ref-video",
+					thumbnail: null,
+				},
+			]);
+		});
+
+		it("待機中に現れた未解決スロットも待ち対象に入る", async () => {
+			const { uploadFile, callsOf } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				const waiting = result.current.uploads.wait();
+				// 本体の転送が解決した周回で、サムネイルという新しい未解決スロットが増える。
+				// 待機開始時点のスナップショットだけを待つ実装では取りこぼす
+				callsOf("video")[0].resolve({ uploadRef: "ref-video" });
+				await result.current.handlers.setThumbnailFromFile(tempId, thumbFile());
+				callsOf("thumbnail")[0].resolve({ uploadRef: "ref-thumb" });
+				waited = await waiting;
+			});
+
+			expect(waited!.ok).toBe(true);
+			if (!waited!.ok) return;
+			expect(waited!.videos[0]).toEqual({
+				status: VideoFormStatus.New,
+				uploadRef: "ref-video",
+				thumbnail: { status: "new", uploadRef: "ref-thumb" },
+			});
+		});
+
+		it("待機中の retry で復帰したスロットも待って ok を返す", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile("a.mp4"));
+			});
+			await act(async () => {
+				await result.current.handlers.add(videoFile("b.mp4"));
+			});
+			const failedTempId = result.current.raw.videos[1].tempId;
+			await act(async () => {
+				calls[1].reject(new Error("boom"));
+			});
+			expect(result.current.uploads.failed).toEqual([failedTempId]);
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				// 1 件目の転送が走っているので wait はそこで待つ
+				const waiting = result.current.uploads.wait();
+				// 失敗済みは wait が自動再送しないため、消費側の retry で復帰させる
+				result.current.uploads.retry(failedTempId);
+				calls[0].resolve({ uploadRef: "ref-a" });
+				calls[2].resolve({ uploadRef: "ref-b" });
+				waited = await waiting;
+			});
+
+			expect(waited!.ok).toBe(true);
+			if (!waited!.ok) return;
+			expect(
+				waited!.videos.map((v) => ("uploadRef" in v ? v.uploadRef : null)),
+			).toEqual(["ref-a", "ref-b"]);
+		});
+
+		it("本体が完了しサムネイルが走行中なら両方を待つ", async () => {
+			const { uploadFile, callsOf } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(tempId, thumbFile());
+			});
+			await act(async () => {
+				callsOf("video")[0].resolve({ uploadRef: "ref-video" });
+			});
+
+			let settled = false;
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				const waiting = result.current.uploads.wait().then((r) => {
+					settled = true;
+					return r;
+				});
+				await Promise.resolve();
+				expect(settled).toBe(false);
+				callsOf("thumbnail")[0].resolve({ uploadRef: "ref-thumb" });
+				waited = await waiting;
+			});
+
+			expect(waited!.ok).toBe(true);
+			if (!waited!.ok) return;
+			expect(waited!.videos[0]).toEqual({
+				status: VideoFormStatus.New,
+				uploadRef: "ref-video",
+				thumbnail: { status: "new", uploadRef: "ref-thumb" },
+			});
+		});
+
+		it("失敗したスロットがあれば ok:false + failedTempIds", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				calls[0].reject(new Error("boom"));
+			});
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				waited = await result.current.uploads.wait();
+			});
+
+			expect(waited!).toEqual({ ok: false, failedTempIds: [tempId] });
+			// 失敗済みは自動再試行しないので、転送は 1 回で止まる
+			expect(calls).toHaveLength(1);
+		});
+
+		it("フォームから消えた項目の転送が settle しなくても返る", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result, ref } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+
+			// handlers を介さずに項目を落とす（form.reset 相当）
+			await act(async () => {
+				ref.adapter?.setVideos([]);
+			});
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				waited = await result.current.uploads.wait();
+			});
+
+			expect(waited!).toEqual({ ok: true, videos: [], deletedIds: [] });
+			// 孤児回収が台帳から落とすので、走行中だった転送は中断される
+			expect(calls[0].ctx.signal.aborted).toBe(true);
+		});
+
+		it("既存動画のサムネイル差し替えは replaced で運ばれる", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const ex = makeExistingVideo({
+				tempId: "temp_ex",
+				id: "id-ex",
+				thumbnail: {
+					source: ThumbnailSource.Existing,
+					uploadedUrl: "https://s3.example.com/old-thumb.jpg",
+				},
+			});
+			const { result } = await renderCore([ex], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(
+					"temp_ex",
+					thumbFile(),
+				);
+			});
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				const waiting = result.current.uploads.wait();
+				calls[0].resolve({ uploadRef: "ref-new-thumb" });
+				waited = await waiting;
+			});
+
+			expect(waited!.ok).toBe(true);
+			if (!waited!.ok) return;
+			expect(waited!.videos[0]).toEqual({
+				status: VideoFormStatus.Existing,
+				id: "id-ex",
+				thumbnail: { status: "replaced", uploadRef: "ref-new-thumb" },
+			});
+		});
+
+		it("サムネイル削除は removed で運ばれる", async () => {
+			const ex = makeExistingVideo({
+				tempId: "temp_ex",
+				id: "id-ex",
+				thumbnail: {
+					source: ThumbnailSource.Existing,
+					uploadedUrl: "https://s3.example.com/old-thumb.jpg",
+				},
+			});
+			const { result } = await renderCore([ex]);
+
+			await act(async () => {
+				await result.current.handlers.removeThumbnail("temp_ex");
+			});
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				waited = await result.current.uploads.wait();
+			});
+
+			expect(waited!.ok).toBe(true);
+			if (!waited!.ok) return;
+			expect(waited!.videos[0]).toEqual({
+				status: VideoFormStatus.Existing,
+				id: "id-ex",
+				thumbnail: { status: "removed" },
+			});
+		});
+
+		it("書き込みを捨てる adapter では再発行を打ち切って失敗に倒す", async () => {
+			const uploadFile = vi.fn(async () => ({ uploadRef: "ref" }));
+			const nv = makeNewVideo({ tempId: "temp_stuck" });
+			const { result } = await renderCore([nv], {
+				uploadFile,
+				dropUploadRefs: true,
+			});
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				waited = await result.current.uploads.wait();
+			});
+
+			expect(waited!).toEqual({ ok: false, failedTempIds: ["temp_stuck"] });
+			// 台帳にも失敗として残す。返るだけだと消費側が retry できない
+			expect(result.current.uploads.failed).toEqual(["temp_stuck"]);
+			// 上限（自己破棄 2 回）まで試して止まる。無制限に撃ち続けない
+			expect(uploadFile.mock.calls.length).toBeLessThanOrEqual(2);
+		});
+
+		it("削除した既存動画の id は deletedIds に載る", async () => {
+			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
+			const { result } = await renderCore([ex]);
+
+			await act(async () => {
+				await result.current.handlers.delete("temp_ex");
+			});
+
+			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
+			await act(async () => {
+				waited = await result.current.uploads.wait();
+			});
+
+			expect(waited!).toEqual({
+				ok: true,
+				videos: [],
+				deletedIds: ["id-ex"],
+			});
 		});
 	});
 
-	describe("isBusy / isPending (DX-4)", () => {
+	describe("uploads.getReady", () => {
+		it("未完了のスロットを持つ項目を除外して excludedTempIds で返す", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
+			const { result } = await renderCore([ex], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			const pendingTempId = result.current.raw.videos[1].tempId;
+
+			const ready = result.current.uploads.getReady();
+
+			expect(ready.excludedTempIds).toEqual([pendingTempId]);
+			expect(ready.videos).toEqual([
+				{ status: VideoFormStatus.Existing, id: "id-ex", thumbnail: null },
+			]);
+
+			await act(async () => {
+				calls[0].resolve({ uploadRef: "ref-video" });
+			});
+
+			expect(result.current.uploads.getReady().excludedTempIds).toEqual([]);
+		});
+
+		it("サムネイルだけ転送中の項目も丸ごと除外される", async () => {
+			const { uploadFile, callsOf } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				await result.current.handlers.setThumbnailFromFile(tempId, thumbFile());
+			});
+			await act(async () => {
+				callsOf("video")[0].resolve({ uploadRef: "ref-video" });
+			});
+
+			const ready = result.current.uploads.getReady();
+
+			expect(ready.excludedTempIds).toEqual([tempId]);
+			expect(ready.videos).toEqual([]);
+		});
+
+		it("差し替え中の項目を除外すると元動画が同じ位置へ戻る", async () => {
+			const { uploadFile } = createUploadSpy();
+			const head = makeExistingVideo({ tempId: "temp_head", id: "id-head" });
+			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
+			const { result } = await renderCore([head, ex], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.changeFile("temp_ex", videoFile("n.mp4"));
+			});
+			expect(result.current.raw.deletedVideoIds).toEqual(["id-ex"]);
+
+			const ready = result.current.uploads.getReady();
+
+			expect(ready.excludedTempIds).toEqual(["temp_ex"]);
+			expect(ready.videos).toEqual([
+				{ status: VideoFormStatus.Existing, id: "id-head", thumbnail: null },
+				{ status: VideoFormStatus.Existing, id: "id-ex", thumbnail: null },
+			]);
+			// 元動画を戻すなら削除も取り消す
+			expect(ready.deletedIds).toEqual([]);
+		});
+
+		it("差し替え後にファイルを選び直しても元動画への対応が切れない", async () => {
+			const { uploadFile } = createUploadSpy();
+			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
+			const { result } = await renderCore([ex], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.changeFile("temp_ex", videoFile("1.mp4"));
+			});
+			await act(async () => {
+				await result.current.handlers.changeFile("temp_ex", videoFile("2.mp4"));
+			});
+
+			expect(firstVideo(result).replacesId).toBe("id-ex");
+			const ready = result.current.uploads.getReady();
+			expect(ready.videos).toEqual([
+				{ status: VideoFormStatus.Existing, id: "id-ex", thumbnail: null },
+			]);
+			expect(ready.deletedIds).toEqual([]);
+		});
+
+		it("失敗したスロットを持つ項目も除外される", async () => {
+			const { uploadFile, calls } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+			await act(async () => {
+				calls[0].reject(new Error("boom"));
+			});
+			expect(result.current.uploads.failed).toEqual([tempId]);
+
+			// 失敗済みは自動再試行しないので、retry を呼ぶまで除外され続ける
+			const ready = result.current.uploads.getReady();
+
+			expect(ready.excludedTempIds).toEqual([tempId]);
+			expect(ready.videos).toEqual([]);
+		});
+
+		it("uploadFile 未設定なら新規項目を除外しない", async () => {
+			const { result } = await renderCore();
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+
+			const ready = result.current.uploads.getReady();
+
+			expect(ready.excludedTempIds).toEqual([]);
+			expect(ready.videos).toHaveLength(1);
+		});
+	});
+
+	describe("isBusy / isPending", () => {
 		it("handleAdd 中に isBusy が true になり、完了後 false に戻る", async () => {
 			const d = createDeferred<File>();
 			const processFile = vi.fn(async (_f: File) => d.promise);
@@ -1560,15 +2125,13 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 			let addPromise: Promise<boolean>;
 			await act(async () => {
-				addPromise = result.current.handlers.add(
-					new File(["v"], "a.mp4", { type: "video/mp4" }),
-				);
+				addPromise = result.current.handlers.add(videoFile());
 			});
 
 			expect(result.current.isBusy).toBe(true);
 
 			await act(async () => {
-				d.resolve(new File(["v"], "a.mp4", { type: "video/mp4" }));
+				d.resolve(videoFile());
 				await addPromise!;
 			});
 
@@ -1587,7 +2150,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			await act(async () => {
 				changePromise = result.current.handlers.changeFile(
 					"temp_pending_test",
-					new File(["v"], "b.mp4", { type: "video/mp4" }),
+					videoFile("b.mp4"),
 				);
 			});
 
@@ -1595,7 +2158,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			expect(result.current.isBusy).toBe(true);
 
 			await act(async () => {
-				d.resolve(new File(["v"], "b.mp4", { type: "video/mp4" }));
+				d.resolve(videoFile("b.mp4"));
 				await changePromise!;
 			});
 
@@ -1603,10 +2166,17 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			expect(result.current.isBusy).toBe(false);
 		});
 
-		it("isBusy は isAdding と pendingOperations のいずれかで true になる", async () => {
-			const { result } = await renderCore([]);
+		it("転送中は isPending / isBusy に出ない（転送は uploadState が持つ）", async () => {
+			const { uploadFile } = createUploadSpy();
+			const { result } = await renderCore([], { uploadFile });
+
+			await act(async () => {
+				await result.current.handlers.add(videoFile());
+			});
+
+			expect(result.current.items[0].uploadState.video?.status).toBe("pending");
+			expect(result.current.items[0].isPending).toBe(false);
 			expect(result.current.isBusy).toBe(false);
-			expect(result.current.isAdding).toBe(false);
 		});
 	});
 });

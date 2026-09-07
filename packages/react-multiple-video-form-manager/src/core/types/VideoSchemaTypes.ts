@@ -1,3 +1,5 @@
+import { UploadKind } from "./Upload";
+import type { VideoUploadState } from "./UploadState";
 import type { Video } from "./Video";
 
 export type VideoSchemaOptions = {
@@ -46,8 +48,8 @@ export type CoreMessages = {
 	maxVideos?: (max: number) => string;
 	processFile?: () => string;
 	processThumbnailFile?: () => string;
-	uploadFile?: () => string;
-	uploadThumbnailFile?: () => string;
+	/** 転送の失敗。本体とサムネイルで語彙を分けず kind で分岐する */
+	upload?: (kind: UploadKind) => string;
 	frameCapture?: () => string;
 	validationFailed?: () => string;
 };
@@ -60,8 +62,10 @@ export const defaultCoreMessages = {
 	maxVideos: defaultMessages.maxVideos,
 	processFile: () => "ファイルの処理に失敗しました。",
 	processThumbnailFile: () => "サムネイルファイルの処理に失敗しました。",
-	uploadFile: () => "ファイルのアップロードに失敗しました。",
-	uploadThumbnailFile: () => "サムネイルのアップロードに失敗しました。",
+	upload: (kind: UploadKind) =>
+		kind === UploadKind.Video
+			? "ファイルのアップロードに失敗しました。"
+			: "サムネイルのアップロードに失敗しました。",
 	frameCapture: () => "フレームキャプチャに失敗しました。",
 	validationFailed: () => "validation failed",
 } as const satisfies Required<CoreMessages>;
@@ -142,7 +146,14 @@ export type VideoItem = {
 	canMoveUp: boolean;
 	canMoveDown: boolean;
 	errorMessages: string[];
+	/**
+	 * ファイル加工（`processFile` / `processThumbnailFile`）とフレームキャプチャの
+	 * 進行中フラグ。転送は含まない（転送は `uploadState` が持つ）。
+	 * 動画の加工は長くかかるため、転送とは別に提示できるようにしている
+	 */
 	isPending: boolean;
+	/** 転送中・失敗のスロットだけ値を持つ。完了は転送参照の有無から導出する */
+	uploadState: VideoUploadState;
 	handlers: ItemHandlers;
 };
 

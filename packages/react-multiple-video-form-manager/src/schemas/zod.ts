@@ -95,6 +95,8 @@ export function createVideosSchema(options: VideoSchemaOptions) {
 		id: z.undefined(),
 		file: videoFileSchema,
 		uploadRef: z.string().optional(),
+		// 差し替え元の既存動画の id。id と同じ検証をかける
+		replacesId: idSchema.optional(),
 		thumbnail: z.nullable(
 			z.union([thumbnailFromFrameSchema, thumbnailFromUploadSchema]),
 		),

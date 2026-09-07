@@ -97,6 +97,19 @@ describe("normalizeRhfErrors contract test", () => {
 		expect(r.root).toHaveLength(0);
 	});
 
+	it("replacesId のスキーマエラーが items[tempId].replacesId に届く", async () => {
+		const videos = [
+			{
+				...makeVideo("t1", new File(["x"], "v.mp4", { type: "video/mp4" })),
+				replacesId: 42,
+			} as unknown as Video,
+		];
+		const r = await resolveAndNormalize(videos);
+
+		expect(r.items.t1?.replacesId?.message).toBeDefined();
+		expect(r.root).toHaveLength(0);
+	});
+
 	it("uploadRef のスキーマエラーが items[tempId].uploadRef に届く", async () => {
 		const videos = [
 			{

@@ -1,4 +1,26 @@
+import type {
+	UploadedSubmitVideo,
+	UploadFileContext,
+} from "@curry-battle/react-multiple-video-form-manager";
 import { generateUUIDv7, type UUID } from "../libs/Uuid";
+
+/** 中断要求で止まる待機。転送ハンドラが ctx.signal を尊重する形を実演する */
+const delay = (ms: number, signal?: AbortSignal): Promise<void> =>
+	new Promise((resolve, reject) => {
+		if (signal?.aborted) {
+			reject(signal.reason);
+			return;
+		}
+		const timer = setTimeout(resolve, ms);
+		signal?.addEventListener(
+			"abort",
+			() => {
+				clearTimeout(timer);
+				reject(signal.reason);
+			},
+			{ once: true },
+		);
+	});
 
 export const API = {
 	getPresignedUrl: async (filename: string, contentType: string) => {
@@ -17,8 +39,14 @@ export const API = {
 		videoId: UUID,
 		file: File,
 		uploadUrl: string,
+		ctx: UploadFileContext,
 	): Promise<string> => {
-		await new Promise((resolve) => setTimeout(resolve, 1000));
+		// 進捗を刻んで報告する。実際の転送では XHR の progress イベント等をそのまま渡す
+		const steps = 5;
+		for (let step = 1; step <= steps; step++) {
+			await delay(1000 / steps, ctx.signal);
+			ctx.onProgress(step / steps);
+		}
 		console.log(`Uploading file: ${file.name}`);
 
 		try {
@@ -31,19 +59,10 @@ export const API = {
 		return `https://s3.example.com/${filePath}`;
 	},
 
+	// 送信素材をそのまま受ける。表示順は配列の順序が表すので order は持たない
 	updateVideos: async (
-		videos: {
-			id?: string;
-			status: string;
-			order: number;
-			uploadedUrl?: string;
-			thumbnail?: {
-				status: string;
-				source?: string;
-				uploadedUrl?: string;
-			};
-		}[],
-		deletedVideoIds: string[],
+		videos: readonly UploadedSubmitVideo[],
+		deletedVideoIds: readonly string[],
 	): Promise<boolean> => {
 		await new Promise((resolve) => setTimeout(resolve, 500));
 

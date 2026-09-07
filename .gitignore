@@ -32,6 +32,10 @@ dist-ssr
 **/playwright-report/
 **/test-results/
 
+# Vitest browser mode（失敗時のスクリーンショットと添付）
+**/.vitest-attachments/
+**/__screenshots__/
+
 # Coverage
 **/coverage/
 

@@ -1,7 +1,28 @@
+import { StrictMode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
-import { harnesses, makeFile } from "./TestHarness";
+import type {
+	UploadFileContext,
+	UploadFileFn,
+	UploadFileResult,
+} from "../../core/types/Upload";
+import { harnesses, makeFile, makeNew } from "./TestHarness";
+
+/** 転送の解決タイミングをテスト側で握るための uploadFile */
+function createUploadSpy() {
+	const calls: {
+		file: File;
+		ctx: UploadFileContext;
+		resolve: (result: UploadFileResult) => void;
+		reject: (error: unknown) => void;
+	}[] = [];
+	const uploadFile: UploadFileFn = (file, ctx) =>
+		new Promise<UploadFileResult>((resolve, reject) => {
+			calls.push({ file, ctx, resolve, reject });
+		});
+	return { uploadFile, calls };
+}
 
 describe.each(harnesses)("Upload Flow (%s)", (_label, Harness) => {
 	it("uploadFile 成功 → uploadRef が動画に反映される", async () => {
@@ -24,7 +45,59 @@ describe.each(harnesses)("Upload Flow (%s)", (_label, Harness) => {
 		expect(uploadFile).toHaveBeenCalledOnce();
 	});
 
-	it("uploadFile 失敗 → onError(upload_file) が呼ばれ動画は追加されない", async () => {
+	it("転送の完了を待たずに項目が出て、uploadState が pending になる", async () => {
+		const { uploadFile, calls } = createUploadSpy();
+
+		await render(<Harness uploadFile={uploadFile} />);
+
+		await userEvent.upload(
+			page.getByTestId("add-input").element(),
+			makeFile("video.mp4"),
+		);
+
+		await expect.element(page.getByTestId("item-count")).toHaveTextContent("1");
+		await expect
+			.element(page.getByTestId("upload-state-0"))
+			.toHaveTextContent("video:pending");
+		await expect
+			.element(page.getByTestId("uploads-pending"))
+			.toHaveTextContent("1");
+		await expect
+			.element(page.getByTestId("upload-ref-0"))
+			.not.toBeInTheDocument();
+
+		calls[0].resolve({ uploadRef: "https://s3.example.com/done.mp4" });
+
+		await expect
+			.element(page.getByTestId("upload-ref-0"))
+			.toHaveTextContent("https://s3.example.com/done.mp4");
+		await expect
+			.element(page.getByTestId("uploads-pending"))
+			.toHaveTextContent("0");
+		await expect
+			.element(page.getByTestId("upload-state-0"))
+			.toHaveTextContent("");
+	});
+
+	it("onProgress の報告が uploadState に出る", async () => {
+		const { uploadFile, calls } = createUploadSpy();
+
+		await render(<Harness uploadFile={uploadFile} />);
+
+		await userEvent.upload(
+			page.getByTestId("add-input").element(),
+			makeFile("video.mp4"),
+		);
+		await expect.element(page.getByTestId("item-count")).toHaveTextContent("1");
+
+		calls[0].ctx.onProgress(0.5);
+
+		await expect
+			.element(page.getByTestId("upload-state-0"))
+			.toHaveTextContent("video:pending:50");
+	});
+
+	it("uploadFile 失敗 → 項目は残り、onError(upload) と failed で伝わる", async () => {
 		const onError = vi.fn();
 		const uploadFile = vi.fn(async () => {
 			throw new Error("upload failed");
@@ -37,9 +110,148 @@ describe.each(harnesses)("Upload Flow (%s)", (_label, Harness) => {
 			makeFile("video.mp4"),
 		);
 
-		await expect.element(page.getByTestId("item-count")).toHaveTextContent("0");
+		await expect.element(page.getByTestId("item-count")).toHaveTextContent("1");
+		await expect
+			.element(page.getByTestId("upload-state-0"))
+			.toHaveTextContent("video:failed");
+		await expect
+			.element(page.getByTestId("uploads-failed"))
+			.toHaveTextContent("1");
 		expect(onError).toHaveBeenCalledWith(
-			expect.objectContaining({ type: "upload_file" }),
+			expect.objectContaining({ type: "upload", kind: "video" }),
+		);
+	});
+
+	it("失敗後の retry で転送が再送され uploadRef が入る", async () => {
+		let attempt = 0;
+		const uploadFile = vi.fn(async () => {
+			attempt += 1;
+			if (attempt === 1) throw new Error("upload failed");
+			return { uploadRef: "https://s3.example.com/retried.mp4" };
+		});
+
+		await render(<Harness uploadFile={uploadFile} />);
+
+		await userEvent.upload(
+			page.getByTestId("add-input").element(),
+			makeFile("video.mp4"),
+		);
+		await expect
+			.element(page.getByTestId("upload-state-0"))
+			.toHaveTextContent("video:failed");
+
+		await page.getByTestId("retry-0").click();
+
+		await expect
+			.element(page.getByTestId("upload-ref-0"))
+			.toHaveTextContent("https://s3.example.com/retried.mp4");
+		await expect
+			.element(page.getByTestId("uploads-failed"))
+			.toHaveTextContent("0");
+	});
+
+	it("本体の転送中にサムネイルを設定しても本体の転送が破棄されない", async () => {
+		const { uploadFile, calls } = createUploadSpy();
+
+		await render(<Harness uploadFile={uploadFile} />);
+
+		await userEvent.upload(
+			page.getByTestId("add-input").element(),
+			makeFile("video.mp4"),
+		);
+		await expect
+			.element(page.getByTestId("upload-state-0"))
+			.toHaveTextContent("video:pending");
+
+		await userEvent.upload(
+			page.getByTestId("thumbnail-input-0").element(),
+			makeFile("thumb.jpg", "image/jpeg"),
+		);
+		await expect
+			.element(page.getByTestId("has-thumbnail-0"))
+			.toHaveTextContent("yes");
+		await expect
+			.element(page.getByTestId("upload-state-0"))
+			.toHaveTextContent("video:pending,thumbnail:pending");
+
+		for (const call of calls) {
+			call.resolve({
+				uploadRef:
+					call.ctx.kind === "video"
+						? "https://s3.example.com/v.mp4"
+						: "https://s3.example.com/t.jpg",
+			});
+		}
+
+		await expect
+			.element(page.getByTestId("upload-ref-0"))
+			.toHaveTextContent("https://s3.example.com/v.mp4");
+		await expect
+			.element(page.getByTestId("uploads-pending"))
+			.toHaveTextContent("0");
+	});
+
+	it("StrictMode の二重 mount でも初期値の転送は 1 本に収まる", async () => {
+		const { uploadFile, calls } = createUploadSpy();
+
+		// 二重 mount の最中に self-heal が発行するので、中断と再発行がこの窓で起きる
+		await render(
+			<StrictMode>
+				<Harness
+					uploadFile={uploadFile}
+					initialVideos={[makeNew("temp_strict")]}
+				/>
+			</StrictMode>,
+		);
+
+		await expect
+			.element(page.getByTestId("upload-state-0"))
+			.toHaveTextContent("video:pending");
+
+		const alive = calls.filter((call) => !call.ctx.signal.aborted);
+		expect(alive).toHaveLength(1);
+
+		alive[0].resolve({ uploadRef: "https://s3.example.com/strict.mp4" });
+
+		await expect
+			.element(page.getByTestId("upload-ref-0"))
+			.toHaveTextContent("https://s3.example.com/strict.mp4");
+		await expect
+			.element(page.getByTestId("uploads-pending"))
+			.toHaveTextContent("0");
+	});
+
+	it("StrictMode でも生きた転送は 1 スロットに 1 本", async () => {
+		const { uploadFile, calls } = createUploadSpy();
+
+		await render(
+			<StrictMode>
+				<Harness uploadFile={uploadFile} />
+			</StrictMode>,
+		);
+
+		await userEvent.upload(
+			page.getByTestId("add-input").element(),
+			makeFile("video.mp4"),
+		);
+		await expect
+			.element(page.getByTestId("upload-state-0"))
+			.toHaveTextContent("video:pending");
+
+		await userEvent.upload(
+			page.getByTestId("thumbnail-input-0").element(),
+			makeFile("thumb.jpg", "image/jpeg"),
+		);
+		await expect
+			.element(page.getByTestId("upload-state-0"))
+			.toHaveTextContent("video:pending,thumbnail:pending");
+
+		// 二重 mount で中断された転送は台帳から落ちて再発行されるが、
+		// 生きているのはスロットごとに 1 本
+		const alive = calls.filter((call) => !call.ctx.signal.aborted);
+		expect(alive.filter((call) => call.ctx.kind === "video")).toHaveLength(1);
+		expect(alive.filter((call) => call.ctx.kind === "thumbnail")).toHaveLength(
+			1,
 		);
 	});
 
@@ -105,36 +317,6 @@ describe.each(harnesses)("Upload Flow (%s)", (_label, Harness) => {
 		expect(uploadFile).toHaveBeenCalledOnce();
 	});
 
-	it("upload-on-select 進行中に isBusy が true になる", async () => {
-		let resolveUpload!: (value: { uploadRef: string }) => void;
-		const uploadFile = vi.fn(
-			() =>
-				new Promise<{ uploadRef: string }>((resolve) => {
-					resolveUpload = resolve;
-				}),
-		);
-
-		await render(<Harness uploadFile={uploadFile} />);
-
-		await expect
-			.element(page.getByTestId("is-busy"))
-			.toHaveTextContent("false");
-
-		await userEvent.upload(
-			page.getByTestId("add-input").element(),
-			makeFile("video.mp4"),
-		);
-
-		await expect.element(page.getByTestId("is-busy")).toHaveTextContent("true");
-
-		resolveUpload({ uploadRef: "https://s3.example.com/done.mp4" });
-
-		await expect
-			.element(page.getByTestId("is-busy"))
-			.toHaveTextContent("false");
-		await expect.element(page.getByTestId("item-count")).toHaveTextContent("1");
-	});
-
 	it("uploadFile 未設定時は uploadRef なしで動画が即追加される", async () => {
 		await render(<Harness />);
 
@@ -147,5 +329,8 @@ describe.each(harnesses)("Upload Flow (%s)", (_label, Harness) => {
 		await expect
 			.element(page.getByTestId("upload-ref-0"))
 			.not.toBeInTheDocument();
+		await expect
+			.element(page.getByTestId("uploads-pending"))
+			.toHaveTextContent("0");
 	});
 });

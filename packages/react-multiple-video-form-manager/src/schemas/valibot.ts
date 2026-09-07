@@ -108,6 +108,8 @@ export function createVideosSchema(options: VideoSchemaOptions) {
 		id: v.undefined(),
 		file: videoFileSchema,
 		uploadRef: v.optional(v.string()),
+		// 差し替え元の既存動画の id。id と同じ検証をかける
+		replacesId: v.optional(idSchema),
 		thumbnail: v.nullable(
 			v.union([thumbnailFromFrameSchema, thumbnailFromUploadSchema]),
 		),

@@ -1,10 +1,12 @@
 import {
 	getFileFromChangeEvent,
 	type ItemHandlers,
+	type UploadState,
 	usePreviewUrl,
 	useThumbnailPreviewUrl,
 	type Video,
 	VideoFormStatus,
+	type VideoUploadState,
 } from "@curry-battle/react-multiple-video-form-manager";
 import type { ChangeEvent } from "react";
 import { useEffect, useRef, useState } from "react";
@@ -16,7 +18,70 @@ interface Props {
 	canMoveUp: boolean;
 	canMoveDown: boolean;
 	isPending: boolean;
+	uploadState: VideoUploadState;
+	onRetry: () => void;
 	error: string | undefined;
+}
+
+/**
+ * 転送スロット 1 本の状態。転送していないスロットは何も出さない。
+ *
+ * 完了を表す状態はライブラリから出てこない（remount で消えるため）。
+ * 「アップロード済み」を出したいなら転送参照の有無から導出する。
+ */
+function UploadSlotStatus({
+	label,
+	state,
+	onRetry,
+	testId,
+}: {
+	label: string;
+	state: UploadState | undefined;
+	onRetry: () => void;
+	testId: string;
+}) {
+	if (state === undefined) return null;
+
+	if (state.status === "failed") {
+		return (
+			<div className="mt-2 flex items-center gap-2" data-testid={testId}>
+				<p className="text-xs text-red-500">
+					{label}のアップロードに失敗しました
+				</p>
+				<button
+					type="button"
+					onClick={onRetry}
+					className="px-2 py-0.5 text-xs font-medium border border-red-200 text-red-600 rounded hover:bg-red-50 transition-colors"
+					data-testid={`${testId}-retry`}
+				>
+					再試行
+				</button>
+			</div>
+		);
+	}
+
+	// 進捗を報告しない転送では値が無い。0% と混同させないため幅不定のバーで見せる
+	const percent =
+		state.progress === undefined ? undefined : Math.round(state.progress * 100);
+
+	return (
+		<div className="mt-2" data-testid={testId}>
+			<div className="flex items-center justify-between text-xs text-slate-400">
+				<span>{label}をアップロード中</span>
+				{percent !== undefined && <span>{percent}%</span>}
+			</div>
+			<div className="mt-1 h-1 w-full rounded-full bg-slate-100 overflow-hidden">
+				<div
+					className={
+						percent === undefined
+							? "h-full w-1/3 bg-blue-300 animate-pulse"
+							: "h-full bg-blue-500 transition-all"
+					}
+					style={percent === undefined ? undefined : { width: `${percent}%` }}
+				/>
+			</div>
+		</div>
+	);
 }
 
 export function FormMultiVideoItem({
@@ -26,6 +91,8 @@ export function FormMultiVideoItem({
 	canMoveUp,
 	canMoveDown,
 	isPending,
+	uploadState,
+	onRetry,
 	error,
 }: Props) {
 	const videoRef = useRef<HTMLVideoElement>(null);
@@ -266,6 +333,12 @@ export function FormMultiVideoItem({
 							{error}
 						</p>
 					)}
+					<UploadSlotStatus
+						label="動画"
+						state={uploadState.video}
+						onRetry={onRetry}
+						testId="upload-status-video"
+					/>
 				</div>
 
 				{/* Vertical divider */}
@@ -388,6 +461,12 @@ export function FormMultiVideoItem({
 							)}
 						</div>
 					</div>
+					<UploadSlotStatus
+						label="サムネイル"
+						state={uploadState.thumbnail}
+						onRetry={onRetry}
+						testId="upload-status-thumbnail"
+					/>
 				</div>
 			</div>
 
