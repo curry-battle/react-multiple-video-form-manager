@@ -1,6 +1,5 @@
 import { useForm } from "@tanstack/react-form";
 import type { ReactNode } from "react";
-import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import { z } from "zod";
@@ -119,14 +118,16 @@ describe("MultiVideoController (integration)", () => {
 
 		expect(handleRef.current?.items).toHaveLength(0);
 
-		await act(async () => {
-			await handleRef.current?.addVideo(
-				new File(["v"], "a.mp4", { type: "video/mp4" }),
+		await handleRef.current?.addVideo(
+			new File(["v"], "a.mp4", { type: "video/mp4" }),
+		);
+
+		await vi.waitFor(() => {
+			expect(handleRef.current?.items).toHaveLength(1);
+			expect(handleRef.current?.items[0]?.video.status).toBe(
+				VideoFormStatus.New,
 			);
 		});
-
-		expect(handleRef.current?.items).toHaveLength(1);
-		expect(handleRef.current?.items[0]?.video.status).toBe(VideoFormStatus.New);
 	});
 
 	it("handleDelete で New 動画は除去される", async () => {
@@ -141,10 +142,8 @@ describe("MultiVideoController (integration)", () => {
 			/>,
 		);
 		expect(handleRef.current?.items).toHaveLength(1);
-		await act(async () => {
-			await handleRef.current?.handleDelete("temp_n");
-		});
-		expect(handleRef.current?.items).toHaveLength(0);
+		await handleRef.current?.handleDelete("temp_n");
+		await vi.waitFor(() => expect(handleRef.current?.items).toHaveLength(0));
 	});
 
 	it("Standard Schema 経由で invalid を追加 → adapter.validate 後に items[i].errors.file が反映される (reactive subscription)", async () => {
@@ -159,19 +158,19 @@ describe("MultiVideoController (integration)", () => {
 			/>,
 		);
 
-		await act(async () => {
-			// video/webm is not in acceptedVideoTypes → schema rejects
-			await handleRef.current?.addVideo(
-				new File(["v"], "bad.webm", { type: "video/webm" }),
-			);
-		});
+		// video/webm is not in acceptedVideoTypes → schema rejects
+		await handleRef.current?.addVideo(
+			new File(["v"], "bad.webm", { type: "video/webm" }),
+		);
 
-		const item = handleRef.current?.items[0];
-		expect(item).toBeDefined();
-		expect(item?.errors).toBeDefined();
-		expect(
-			(item?.errors as Record<string, unknown> | undefined)?.file,
-		).toBeDefined();
+		await vi.waitFor(() => {
+			const item = handleRef.current?.items[0];
+			expect(item).toBeDefined();
+			expect(item?.errors).toBeDefined();
+			expect(
+				(item?.errors as Record<string, unknown> | undefined)?.file,
+			).toBeDefined();
+		});
 	});
 
 	it("Standard Schema 経由で maxVideos 超過 → rootErrors に実メッセージが反映される", async () => {
@@ -186,20 +185,21 @@ describe("MultiVideoController (integration)", () => {
 				handleRef={handleRef}
 			/>,
 		);
-		let ok = false;
-		await act(async () => {
-			ok =
-				(await handleRef.current?.addVideo(
-					new File(["v"], "second.mp4", { type: "video/mp4" }),
-				)) ?? false;
-		});
+		const ok =
+			(await handleRef.current?.addVideo(
+				new File(["v"], "second.mp4", { type: "video/mp4" }),
+			)) ?? false;
 		expect(ok).toBe(true);
-		const rootErrors = handleRef.current?.rootErrors ?? [];
-		expect(rootErrors.length).toBeGreaterThan(0);
-		const messages = rootErrors.map((e) => (e as { message?: string }).message);
-		expect(messages.some((m) => typeof m === "string" && m.length > 0)).toBe(
-			true,
-		);
+		await vi.waitFor(() => {
+			const rootErrors = handleRef.current?.rootErrors ?? [];
+			expect(rootErrors.length).toBeGreaterThan(0);
+			const messages = rootErrors.map(
+				(e) => (e as { message?: string }).message,
+			);
+			expect(messages.some((m) => typeof m === "string" && m.length > 0)).toBe(
+				true,
+			);
+		});
 	});
 
 	it("maxVideos で root レベル制御は core 側のガードで効く", async () => {
@@ -213,13 +213,10 @@ describe("MultiVideoController (integration)", () => {
 				handleRef={handleRef}
 			/>,
 		);
-		let ok = true;
-		await act(async () => {
-			ok =
-				(await handleRef.current?.addVideo(
-					new File(["v"], "b.mp4", { type: "video/mp4" }),
-				)) ?? true;
-		});
+		const ok =
+			(await handleRef.current?.addVideo(
+				new File(["v"], "b.mp4", { type: "video/mp4" }),
+			)) ?? true;
 		expect(ok).toBe(false);
 	});
 
@@ -239,11 +236,9 @@ describe("MultiVideoController (integration)", () => {
 			/>,
 		);
 
-		await act(async () => {
-			await handleRef.current?.addVideo(
-				new File(["v"], "b.mp4", { type: "video/mp4" }),
-			);
-		});
+		await handleRef.current?.addVideo(
+			new File(["v"], "b.mp4", { type: "video/mp4" }),
+		);
 
 		expect(onError).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -295,16 +290,17 @@ describe("MultiVideoController (integration)", () => {
 
 			await render(<FormLevelHost />);
 
-			await act(async () => {
-				await handleRef.current?.addVideo(
-					new File(["v"], "bad.webm", { type: "video/webm" }),
-				);
-			});
+			await handleRef.current?.addVideo(
+				new File(["v"], "bad.webm", { type: "video/webm" }),
+			);
 
-			expect(handleRef.current?.items).toHaveLength(1);
-			expect(
-				(handleRef.current?.items[0]?.errors as Record<string, unknown>)?.file,
-			).toBeDefined();
+			await vi.waitFor(() => {
+				expect(handleRef.current?.items).toHaveLength(1);
+				expect(
+					(handleRef.current?.items[0]?.errors as Record<string, unknown>)
+						?.file,
+				).toBeDefined();
+			});
 
 			const values = formRef.current?.state.values as TestForm | undefined;
 			expect(values?.videos).toHaveLength(1);
@@ -347,13 +343,13 @@ describe("MultiVideoController (integration)", () => {
 			await render(<DefaultHost />);
 			expect(deleteRef.current).not.toBeNull();
 
-			await act(async () => {
-				await deleteRef.current!();
-			});
+			await deleteRef.current!();
 
-			const values = formRef.current?.state.values as TestForm | undefined;
-			expect(values?.videos).toHaveLength(0);
-			expect(values?.videosDeletedIds).toContain(existing.id);
+			await vi.waitFor(() => {
+				const values = formRef.current?.state.values as TestForm | undefined;
+				expect(values?.videos).toHaveLength(0);
+				expect(values?.videosDeletedIds).toContain(existing.id);
+			});
 		});
 	});
 });

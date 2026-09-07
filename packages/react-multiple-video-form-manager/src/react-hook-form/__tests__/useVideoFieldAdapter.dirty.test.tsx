@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { act } from "react";
 import { type UseFormReturn, useForm } from "react-hook-form";
 import { describe, expect, it } from "vitest";
 import { renderHook } from "vitest-browser-react";
@@ -40,7 +39,7 @@ describe("useRhfVideoFieldAdapter dirty 伝播", () => {
 			return <>{children}</>;
 		};
 
-		const { result } = await renderHook(
+		const { result, act } = await renderHook(
 			() => {
 				const form = formRef.current;
 				if (!form) throw new Error("form not initialized");
@@ -87,7 +86,7 @@ describe("useRhfVideoFieldAdapter dirty 伝播", () => {
 			return <>{children}</>;
 		};
 
-		const { result } = await renderHook(
+		const { result, act } = await renderHook(
 			() => {
 				const form = formRef.current;
 				if (!form) throw new Error("form not initialized");

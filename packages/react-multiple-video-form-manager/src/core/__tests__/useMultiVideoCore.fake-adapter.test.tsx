@@ -1,4 +1,4 @@
-import { act, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "vitest-browser-react";
 import { ThumbnailSource } from "../types/Thumbnail";
@@ -185,7 +185,12 @@ async function renderCore(
 			messages: options.messages,
 		});
 	});
-	return { result: rendered.result, unmount: rendered.unmount, ref };
+	return {
+		result: rendered.result,
+		act: rendered.act,
+		unmount: rendered.unmount,
+		ref,
+	};
 }
 
 const firstVideo = (result: {
@@ -201,7 +206,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 	describe("handleAdd", () => {
 		it("空配列に追加できること", async () => {
-			const { result } = await renderCore();
+			const { result, act } = await renderCore();
 			let ok = false;
 			await act(async () => {
 				ok = await result.current.handlers.add(videoFile());
@@ -213,7 +218,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("maxVideos に達すると false を返し onError を呼ぶこと", async () => {
 			const onError = vi.fn();
-			const { result } = await renderCore([makeNewVideo()], {
+			const { result, act } = await renderCore([makeNewVideo()], {
 				maxVideos: 1,
 				onError,
 			});
@@ -229,7 +234,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("既存配列の末尾に追加されること", async () => {
 			const visible = makeNewVideo();
-			const { result } = await renderCore([visible]);
+			const { result, act } = await renderCore([visible]);
 			await act(async () => {
 				await result.current.handlers.add(videoFile("c.mp4"));
 			});
@@ -242,7 +247,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("processFile が呼ばれること、失敗時は onError + false", async () => {
 			const onError = vi.fn();
 			const processFile = vi.fn(async (f: File) => f);
-			const { result } = await renderCore([], { processFile, onError });
+			const { result, act } = await renderCore([], { processFile, onError });
 			await act(async () => {
 				await result.current.handlers.add(videoFile("p.mp4"));
 			});
@@ -251,12 +256,12 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const failingProcess = vi.fn(async () => {
 				throw new Error("boom");
 			});
-			const { result: r2 } = await renderCore([], {
+			const { result: r2, act: act2 } = await renderCore([], {
 				processFile: failingProcess,
 				onError,
 			});
 			let ok = true;
-			await act(async () => {
+			await act2(async () => {
 				ok = await r2.current.handlers.add(videoFile("p2.mp4"));
 			});
 			expect(ok).toBe(false);
@@ -266,7 +271,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		});
 
 		it("追加後に adapter.validate が呼ばれること", async () => {
-			const { result, ref } = await renderCore();
+			const { result, ref, act } = await renderCore();
 			await act(async () => {
 				await result.current.handlers.add(videoFile("x.mp4"));
 			});
@@ -275,7 +280,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("maxVideos到達 → 削除 → 追加成功（枠解放）", async () => {
 			const ex = makeExistingVideo({ tempId: "temp_ex" });
-			const { result } = await renderCore([ex], { maxVideos: 1 });
+			const { result, act } = await renderCore([ex], { maxVideos: 1 });
 
 			let ok = true;
 			await act(async () => {
@@ -299,7 +304,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 	describe("handleFileChange", () => {
 		it("Existing → 元位置に New、deletedVideoIds に旧 id が追加", async () => {
 			const ex = makeExistingVideo({ tempId: "temp_ex" });
-			const { result } = await renderCore([ex]);
+			const { result, act } = await renderCore([ex]);
 			await act(async () => {
 				await result.current.handlers.changeFile("temp_ex", videoFile("n.mp4"));
 			});
@@ -311,7 +316,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("Existing の差し替えで tempId が維持されること", async () => {
 			const ex = makeExistingVideo({ tempId: "temp_ex" });
-			const { result } = await renderCore([ex]);
+			const { result, act } = await renderCore([ex]);
 			await act(async () => {
 				await result.current.handlers.changeFile("temp_ex", videoFile("n.mp4"));
 			});
@@ -320,7 +325,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("New → file 差し替え、配列長は不変", async () => {
 			const nv = makeNewVideo({ tempId: "temp_n" });
-			const { result } = await renderCore([nv]);
+			const { result, act } = await renderCore([nv]);
 			await act(async () => {
 				await result.current.handlers.changeFile("temp_n", videoFile("n2.mp4"));
 			});
@@ -335,7 +340,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("Existing → 配列から除去、deletedVideoIds に id が追加", async () => {
 			const ex = makeExistingVideo({ tempId: "temp_ex" });
 			const visible = makeNewVideo({ tempId: "temp_n" });
-			const { result } = await renderCore([ex, visible]);
+			const { result, act } = await renderCore([ex, visible]);
 			await act(async () => {
 				await result.current.handlers.delete("temp_ex");
 			});
@@ -347,7 +352,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("New → 配列から除去", async () => {
 			const nv = makeNewVideo({ tempId: "temp_n" });
-			const { result } = await renderCore([nv]);
+			const { result, act } = await renderCore([nv]);
 			await act(async () => {
 				await result.current.handlers.delete("temp_n");
 			});
@@ -359,7 +364,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("先頭から上には移動できない", async () => {
 			const a = makeNewVideo({ tempId: "a" });
 			const b = makeNewVideo({ tempId: "b" });
-			const { result } = await renderCore([a, b]);
+			const { result, act } = await renderCore([a, b]);
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.moveUp("a");
@@ -370,7 +375,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("末尾から下には移動できない", async () => {
 			const a = makeNewVideo({ tempId: "a" });
 			const b = makeNewVideo({ tempId: "b" });
-			const { result } = await renderCore([a, b]);
+			const { result, act } = await renderCore([a, b]);
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.moveDown("b");
@@ -381,7 +386,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("中間要素を移動できる", async () => {
 			const a = makeNewVideo({ tempId: "a" });
 			const b = makeNewVideo({ tempId: "b" });
-			const { result } = await renderCore([a, b]);
+			const { result, act } = await renderCore([a, b]);
 			await act(async () => {
 				await result.current.handlers.moveDown("a");
 			});
@@ -394,7 +399,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const a = makeNewVideo({ tempId: "a" });
 			const b = makeNewVideo({ tempId: "b" });
 			const c = makeNewVideo({ tempId: "c" });
-			const { result } = await renderCore([a, b, c]);
+			const { result, act } = await renderCore([a, b, c]);
 			await act(async () => {
 				await result.current.handlers.move("c", 0);
 			});
@@ -406,7 +411,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("handleMove で不明 tempId は false", async () => {
 			const a = makeNewVideo({ tempId: "a" });
-			const { result } = await renderCore([a]);
+			const { result, act } = await renderCore([a]);
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.move("unknown", 0);
@@ -418,7 +423,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 	describe("Thumbnail handlers", () => {
 		it("handleSetThumbnailFromFile が New 動画にサムネを設定", async () => {
 			const nv = makeNewVideo({ tempId: "temp_n" });
-			const { result } = await renderCore([nv]);
+			const { result, act } = await renderCore([nv]);
 			await act(async () => {
 				await result.current.handlers.setThumbnailFromFile(
 					"temp_n",
@@ -435,7 +440,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				tempId: "temp_n",
 				thumbnail: { source: ThumbnailSource.Upload, file: thumbFile() },
 			});
-			const { result } = await renderCore([nv]);
+			const { result, act } = await renderCore([nv]);
 			await act(async () => {
 				await result.current.handlers.removeThumbnail("temp_n");
 			});
@@ -444,7 +449,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("handleSetThumbnailFromFile: tempId 不一致で false を返す", async () => {
 			const nv = makeNewVideo({ tempId: "temp_n" });
-			const { result } = await renderCore([nv]);
+			const { result, act } = await renderCore([nv]);
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.setThumbnailFromFile(
@@ -490,7 +495,10 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			let call = 0;
 			const processFile = vi.fn(async (_f: File) => deferreds[call++].promise);
 
-			const { result } = await renderCore([], { maxVideos: 1, processFile });
+			const { result, act } = await renderCore([], {
+				maxVideos: 1,
+				processFile,
+			});
 
 			const fileA = videoFile("a.mp4");
 			const fileB = videoFile("b.mp4");
@@ -512,7 +520,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 			const a = makeExistingVideo({ tempId: "temp_A" });
 			const b = makeExistingVideo({ tempId: "temp_B" });
-			const { result } = await renderCore([a, b], { processFile });
+			const { result, act } = await renderCore([a, b], { processFile });
 
 			const newFile = videoFile("x.mp4");
 
@@ -532,7 +540,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("[stale] 既存動画を同期的に2件連続削除しても両方のIDが deletedVideoIds に残る", async () => {
 			const a = makeExistingVideo({ tempId: "temp_A" });
 			const b = makeExistingVideo({ tempId: "temp_B" });
-			const { result } = await renderCore([a, b]);
+			const { result, act } = await renderCore([a, b]);
 
 			await act(async () => {
 				await result.current.handlers.delete("temp_A");
@@ -550,7 +558,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const processFile = vi.fn(async (_f: File) => d.promise);
 
 			const a = makeExistingVideo({ tempId: "temp_A" });
-			const { result } = await renderCore([a], { processFile });
+			const { result, act } = await renderCore([a], { processFile });
 
 			const file = videoFile("n.mp4");
 
@@ -574,7 +582,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			let call = 0;
 			const processFile = vi.fn(async (_f: File) => deferreds[call++].promise);
 
-			const { result } = await renderCore([], { processFile });
+			const { result, act } = await renderCore([], { processFile });
 
 			const fileA = videoFile("a.mp4");
 			const fileB = videoFile("b.mp4");
@@ -594,7 +602,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const a = makeNewVideo({ tempId: "temp_A" });
 			const b = makeNewVideo({ tempId: "temp_B" });
 			const c = makeNewVideo({ tempId: "temp_C" });
-			const { result } = await renderCore([a, b, c]);
+			const { result, act } = await renderCore([a, b, c]);
 
 			await act(async () => {
 				await result.current.handlers.delete("temp_A");
@@ -617,7 +625,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			});
 
 			const nv = makeNewVideo({ tempId: "temp_target" });
-			const { result } = await renderCore([nv], { processFile });
+			const { result, act } = await renderCore([nv], { processFile });
 
 			const fileSlow = videoFile("slow.mp4");
 			const fileFast = videoFile("fast.mp4");
@@ -638,7 +646,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const processFile = vi.fn(async (_f: File) => dVideo.promise);
 
 			const nv = makeNewVideo({ tempId: "temp_target" });
-			const { result } = await renderCore([nv], { processFile });
+			const { result, act } = await renderCore([nv], { processFile });
 
 			const newFile = videoFile("changed.mp4");
 
@@ -666,7 +674,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const processThumbnailFile = vi.fn(async (_f: File) => dThumb.promise);
 
 			const nv = makeNewVideo({ tempId: "temp_target" });
-			const { result } = await renderCore([nv], { processThumbnailFile });
+			const { result, act } = await renderCore([nv], { processThumbnailFile });
 
 			const thumb = thumbFile();
 
@@ -689,7 +697,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const { uploadFile, callsOf } = createUploadSpy();
 
 			const ex = makeExistingVideo({ tempId: "temp_ex" });
-			const { result } = await renderCore([ex], {
+			const { result, act } = await renderCore([ex], {
 				processThumbnailFile,
 				uploadFile,
 			});
@@ -717,7 +725,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const processFile = vi.fn(async (_f: File) => dFile.promise);
 
 			const nv = makeNewVideo({ tempId: "temp_reused" });
-			const { result, ref } = await renderCore([nv], { processFile });
+			const { result, ref, act } = await renderCore([nv], { processFile });
 
 			const changed = videoFile("changed.mp4");
 			const restored = makeNewVideo({ tempId: "temp_reused" });
@@ -746,7 +754,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			);
 
 			const nv = makeNewVideo({ tempId: "temp_target" });
-			const { result } = await renderCore([nv], { processThumbnailFile });
+			const { result, act } = await renderCore([nv], { processThumbnailFile });
 
 			const thumbSlow = thumbFile("slow.jpg");
 			const thumbFast = thumbFile("fast.jpg");
@@ -776,7 +784,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 	describe("ノンブロッキング化", () => {
 		it("転送の完了を待たずに項目が入り、uploadState が pending になる", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			let ok = false;
 			await act(async () => {
@@ -798,7 +806,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("転送が解決すると uploadRef が書き戻され pending から落ちる", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -813,7 +821,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		});
 
 		it("uploadFile 未設定なら転送は起きず項目だけ入る", async () => {
-			const { result } = await renderCore([]);
+			const { result, act } = await renderCore([]);
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
 			});
@@ -825,7 +833,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("転送が失敗しても項目は残り、failed と onError で伝わる", async () => {
 			const onError = vi.fn();
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile, onError });
+			const { result, act } = await renderCore([], { uploadFile, onError });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -854,7 +862,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const uploadFile = vi.fn(
 				async () => ({ uploadRef: "" }) as UploadFileResult,
 			);
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -868,7 +876,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const processFile = vi.fn(
 				async (f: File) => new File([f], `resized_${f.name}`, { type: f.type }),
 			);
-			const { result } = await renderCore([], { uploadFile, processFile });
+			const { result, act } = await renderCore([], { uploadFile, processFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile("v.mp4"));
@@ -883,7 +891,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("差し替えでも転送が起動し、書き戻しが成立する", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile("a.mp4"));
@@ -903,7 +911,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("カスタム upload メッセージが kind つきで onError に載る", async () => {
 			const onError = vi.fn();
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], {
+			const { result, act } = await renderCore([], {
 				uploadFile,
 				onError,
 				messages: { upload: (kind) => `${kind} の転送に失敗（custom）` },
@@ -927,7 +935,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("onError 未設定でも転送失敗でクラッシュしない", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -944,7 +952,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("サムネイルの転送は kind: thumbnail で発行され、そのスロットへ書き戻す", async () => {
 			const { uploadFile, callsOf } = createUploadSpy();
 			const nv = makeNewVideo({ tempId: "temp_n" });
-			const { result } = await renderCore([nv], { uploadFile });
+			const { result, act } = await renderCore([nv], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.setThumbnailFromFile(
@@ -968,7 +976,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("フレームキャプチャは blob を世代トークンにして書き戻す", async () => {
 			const { uploadFile, callsOf } = createUploadSpy();
 			const nv = makeNewVideo({ tempId: "temp_n" });
-			const { result } = await renderCore([nv], { uploadFile });
+			const { result, act } = await renderCore([nv], { uploadFile });
 
 			const { ThumbnailUtils } = await import("../types/Thumbnail");
 			const captureFrameSpy = vi.spyOn(ThumbnailUtils, "captureFrame");
@@ -1001,7 +1009,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("本体の転送中にサムネイルを設定しても本体の転送が破棄されない", async () => {
 			const { uploadFile, calls, callsOf } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1027,7 +1035,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("同じスロットの再発行は先行の転送を中断し、その結果を捨てる", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile("1.mp4"));
@@ -1050,7 +1058,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("handlers を介さない差し替えで転送結果が破棄される", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result, ref } = await renderCore([], { uploadFile });
+			const { result, ref, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1074,7 +1082,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("既存動画の差し替えでサムネイルの転送が中断される", async () => {
 			const { uploadFile, calls, callsOf } = createUploadSpy();
 			const ex = makeExistingVideo({ tempId: "temp_ex" });
-			const { result } = await renderCore([ex], { uploadFile });
+			const { result, act } = await renderCore([ex], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.setThumbnailFromFile(
@@ -1095,7 +1103,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("削除で両スロットの転送が中断され failed も落ちる", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1121,7 +1129,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("サムネイル削除でそのスロットの転送が中断される", async () => {
 			const { uploadFile, callsOf } = createUploadSpy();
 			const ex = makeExistingVideo({ tempId: "temp_ex" });
-			const { result } = await renderCore([ex], { uploadFile });
+			const { result, act } = await renderCore([ex], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.setThumbnailFromFile(
@@ -1139,7 +1147,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("unmount で走行中の転送が中断される", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result, unmount } = await renderCore([], { uploadFile });
+			const { result, unmount, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1153,7 +1161,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 	describe("進捗", () => {
 		it("onProgress の報告が uploadState に載る", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1170,7 +1178,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("範囲外と非有限値は丸める / 無視する", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1194,7 +1202,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("後発の転送へ引き継いだ進捗は、先行の転送の settle で消えない", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile("1.mp4"));
@@ -1230,7 +1238,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("サムネイルスロットでも進捗の引き継ぎが成立する", async () => {
 			const { uploadFile, callsOf } = createUploadSpy();
 			const nv = makeNewVideo({ tempId: "temp_n", uploadRef: "ref-video" });
-			const { result } = await renderCore([nv], { uploadFile });
+			const { result, act } = await renderCore([nv], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.setThumbnailFromFile(
@@ -1265,7 +1273,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("本体とサムネイルの進捗は別々に出る", async () => {
 			const { uploadFile, callsOf } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1305,7 +1313,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("走行中のスロットへは再発行しない", async () => {
 			const { uploadFile, calls } = createUploadSpy();
 			const nv = makeNewVideo({ tempId: "temp_pending" });
-			const { result } = await renderCore([nv], { uploadFile });
+			const { result, act } = await renderCore([nv], { uploadFile });
 
 			expect(calls).toHaveLength(1);
 
@@ -1321,7 +1329,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("失敗したスロットへは再発行しない", async () => {
 			const { uploadFile, calls } = createUploadSpy();
 			const nv = makeNewVideo({ tempId: "temp_failed" });
-			const { result } = await renderCore([nv], { uploadFile });
+			const { result, act } = await renderCore([nv], { uploadFile });
 
 			await act(async () => {
 				calls[0].reject(new Error("boom"));
@@ -1334,7 +1342,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("ファイルを選び直すと失敗済みのスロットにも再発行される", async () => {
 			const { uploadFile, calls } = createUploadSpy();
 			const nv = makeNewVideo({ tempId: "temp_retry_by_change" });
-			const { result } = await renderCore([nv], { uploadFile });
+			const { result, act } = await renderCore([nv], { uploadFile });
 
 			await act(async () => {
 				calls[0].reject(new Error("boom"));
@@ -1352,7 +1360,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("フォームから消えた項目の failed は uploads.failed から落ちる", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result, ref } = await renderCore([], { uploadFile });
+			const { result, ref, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1373,7 +1381,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("反映待ちの追加直後の転送は孤児回収で中断されない", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1403,7 +1411,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 	describe("uploads.retry", () => {
 		it("failed スロットだけを再送して true を返す", async () => {
 			const { uploadFile, calls, callsOf } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1434,7 +1442,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("failed スロットが無ければ false を返し何も発行しない", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1466,7 +1474,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 				adapter?: VideoFieldAdapter;
 				validate?: ReturnType<typeof vi.fn>;
 			} = {};
-			const { result } = await renderHook(() => {
+			const { result, act } = await renderHook(() => {
 				const { adapter, validate } = useFakeAdapter([]);
 				ref.adapter = adapter;
 				ref.validate = validate;
@@ -1492,7 +1500,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("handleFileChange: 存在しない tempId で false が返り副作用がない", async () => {
 			const { uploadFile, calls } = createUploadSpy();
 			const nv = makeNewVideo({ tempId: "temp_n" });
-			const { result } = await renderCore([nv], { uploadFile });
+			const { result, act } = await renderCore([nv], { uploadFile });
 			const callsBefore = calls.length;
 			let ok = true;
 			await act(async () => {
@@ -1508,7 +1516,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("handleSetThumbnailFromFrame: 存在しない tempId で false が返る", async () => {
 			const nv = makeNewVideo({ tempId: "temp_n" });
-			const { result } = await renderCore([nv]);
+			const { result, act } = await renderCore([nv]);
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.setThumbnailFromFrame(
@@ -1521,7 +1529,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("handleDelete: 存在しない tempId で false が返る", async () => {
 			const nv = makeNewVideo({ tempId: "temp_n" });
-			const { result } = await renderCore([nv]);
+			const { result, act } = await renderCore([nv]);
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.delete("does-not-exist");
@@ -1536,7 +1544,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const processFile = vi.fn(async () => {
 				throw new Error("fail");
 			});
-			const { result } = await renderCore([], { processFile });
+			const { result, act } = await renderCore([], { processFile });
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.add(videoFile());
@@ -1545,7 +1553,9 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		});
 
 		it("maxVideos 超過 + onError なしでクラッシュしないこと", async () => {
-			const { result } = await renderCore([makeNewVideo()], { maxVideos: 1 });
+			const { result, act } = await renderCore([makeNewVideo()], {
+				maxVideos: 1,
+			});
 			let ok = true;
 			await act(async () => {
 				ok = await result.current.handlers.add(videoFile());
@@ -1557,7 +1567,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 	describe("メッセージのカスタマイズ", () => {
 		it("[messages] maxVideos 到達時に messages.maxVideos のカスタム文言が onError に載る", async () => {
 			const onError = vi.fn();
-			const { result } = await renderCore([makeNewVideo()], {
+			const { result, act } = await renderCore([makeNewVideo()], {
 				maxVideos: 1,
 				onError,
 				messages: { maxVideos: (max: number) => `最大${max}本まで（custom）` },
@@ -1578,7 +1588,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const processFile = vi.fn(async () => {
 				throw new Error("boom");
 			});
-			const { result } = await renderCore([], {
+			const { result, act } = await renderCore([], {
 				processFile,
 				onError,
 				messages: { processFile: () => "処理失敗（custom）" },
@@ -1596,7 +1606,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("[messages] 未指定時は既定の日本語文言が onError に載る", async () => {
 			const onError = vi.fn();
-			const { result } = await renderCore([makeNewVideo()], {
+			const { result, act } = await renderCore([makeNewVideo()], {
 				maxVideos: 1,
 				onError,
 			});
@@ -1613,7 +1623,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("[messages] キーが undefined でも既定文言にフォールバックし throw しない", async () => {
 			const onError = vi.fn();
-			const { result } = await renderCore([makeNewVideo()], {
+			const { result, act } = await renderCore([makeNewVideo()], {
 				maxVideos: 1,
 				onError,
 				messages: { maxVideos: undefined },
@@ -1697,7 +1707,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("uploadFile 未設定なら待たずに素材を返す", async () => {
 			const nv = makeNewVideo({ tempId: "temp_local" });
 			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
-			const { result } = await renderCore([nv, ex]);
+			const { result, act } = await renderCore([nv, ex]);
 
 			let waited: Awaited<ReturnType<typeof result.current.uploads.wait>>;
 			await act(async () => {
@@ -1719,7 +1729,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("走行中の転送を待ってから素材を返す", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1745,7 +1755,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("待機中に現れた未解決スロットも待ち対象に入る", async () => {
 			const { uploadFile, callsOf } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1774,7 +1784,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("待機中の retry で復帰したスロットも待って ok を返す", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile("a.mp4"));
@@ -1808,7 +1818,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("本体が完了しサムネイルが走行中なら両方を待つ", async () => {
 			const { uploadFile, callsOf } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1845,7 +1855,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("失敗したスロットがあれば ok:false + failedTempIds", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1867,7 +1877,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("フォームから消えた項目の転送が settle しなくても返る", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result, ref } = await renderCore([], { uploadFile });
+			const { result, ref, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -1898,7 +1908,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 					uploadedUrl: "https://s3.example.com/old-thumb.jpg",
 				},
 			});
-			const { result } = await renderCore([ex], { uploadFile });
+			const { result, act } = await renderCore([ex], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.setThumbnailFromFile(
@@ -1932,7 +1942,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 					uploadedUrl: "https://s3.example.com/old-thumb.jpg",
 				},
 			});
-			const { result } = await renderCore([ex]);
+			const { result, act } = await renderCore([ex]);
 
 			await act(async () => {
 				await result.current.handlers.removeThumbnail("temp_ex");
@@ -1955,7 +1965,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("書き込みを捨てる adapter では再発行を打ち切って失敗に倒す", async () => {
 			const uploadFile = vi.fn(async () => ({ uploadRef: "ref" }));
 			const nv = makeNewVideo({ tempId: "temp_stuck" });
-			const { result } = await renderCore([nv], {
+			const { result, act } = await renderCore([nv], {
 				uploadFile,
 				dropUploadRefs: true,
 			});
@@ -1974,7 +1984,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("削除した既存動画の id は deletedIds に載る", async () => {
 			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
-			const { result } = await renderCore([ex]);
+			const { result, act } = await renderCore([ex]);
 
 			await act(async () => {
 				await result.current.handlers.delete("temp_ex");
@@ -1997,7 +2007,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("未完了のスロットを持つ項目を除外して excludedTempIds で返す", async () => {
 			const { uploadFile, calls } = createUploadSpy();
 			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
-			const { result } = await renderCore([ex], { uploadFile });
+			const { result, act } = await renderCore([ex], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -2020,7 +2030,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("サムネイルだけ転送中の項目も丸ごと除外される", async () => {
 			const { uploadFile, callsOf } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -2043,7 +2053,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const { uploadFile } = createUploadSpy();
 			const head = makeExistingVideo({ tempId: "temp_head", id: "id-head" });
 			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
-			const { result } = await renderCore([head, ex], { uploadFile });
+			const { result, act } = await renderCore([head, ex], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.changeFile("temp_ex", videoFile("n.mp4"));
@@ -2064,7 +2074,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("差し替え後にファイルを選び直しても元動画への対応が切れない", async () => {
 			const { uploadFile } = createUploadSpy();
 			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
-			const { result } = await renderCore([ex], { uploadFile });
+			const { result, act } = await renderCore([ex], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.changeFile("temp_ex", videoFile("1.mp4"));
@@ -2083,7 +2093,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("失敗したスロットを持つ項目も除外される", async () => {
 			const { uploadFile, calls } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -2102,7 +2112,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		});
 
 		it("uploadFile 未設定なら新規項目を除外しない", async () => {
-			const { result } = await renderCore();
+			const { result, act } = await renderCore();
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());
@@ -2119,7 +2129,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 		it("handleAdd 中に isBusy が true になり、完了後 false に戻る", async () => {
 			const d = createDeferred<File>();
 			const processFile = vi.fn(async (_f: File) => d.promise);
-			const { result } = await renderCore([], { processFile });
+			const { result, act } = await renderCore([], { processFile });
 
 			expect(result.current.isBusy).toBe(false);
 
@@ -2142,7 +2152,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			const d = createDeferred<File>();
 			const processFile = vi.fn(async (_f: File) => d.promise);
 			const nv = makeNewVideo({ tempId: "temp_pending_test" });
-			const { result } = await renderCore([nv], { processFile });
+			const { result, act } = await renderCore([nv], { processFile });
 
 			expect(result.current.items[0].isPending).toBe(false);
 
@@ -2168,7 +2178,7 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 
 		it("転送中は isPending / isBusy に出ない（転送は uploadState が持つ）", async () => {
 			const { uploadFile } = createUploadSpy();
-			const { result } = await renderCore([], { uploadFile });
+			const { result, act } = await renderCore([], { uploadFile });
 
 			await act(async () => {
 				await result.current.handlers.add(videoFile());

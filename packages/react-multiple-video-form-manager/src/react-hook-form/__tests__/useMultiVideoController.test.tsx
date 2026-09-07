@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { act } from "react";
 import { type UseFormReturn, useForm } from "react-hook-form";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, renderHook } from "vitest-browser-react";
@@ -72,7 +71,7 @@ describe("useMultiVideoController — RHF 配線固有", () => {
 		it("messages.maxVideos のカスタム文言がラッパー経由で onError に載ること", async () => {
 			const onError = vi.fn();
 			const existing = makeExistingVideo();
-			const { result } = await renderControllerHook([existing], {
+			const { result, act } = await renderControllerHook([existing], {
 				maxVideos: 1,
 				onError,
 				messages: { maxVideos: (max: number) => `最大${max}本まで（custom）` },
@@ -94,7 +93,7 @@ describe("useMultiVideoController — RHF 配線固有", () => {
 		it("messages 未指定時は既定の日本語文言が onError に載ること", async () => {
 			const onError = vi.fn();
 			const existing = makeExistingVideo();
-			const { result } = await renderControllerHook([existing], {
+			const { result, act } = await renderControllerHook([existing], {
 				maxVideos: 1,
 				onError,
 			});
@@ -115,7 +114,7 @@ describe("useMultiVideoController — RHF 配線固有", () => {
 
 	describe("RHF replace 経由の dirty 伝播", () => {
 		it("handleAdd で form.getValues に即時反映される", async () => {
-			const { result, formRef } = await renderControllerHook();
+			const { result, act, formRef } = await renderControllerHook();
 			const file = new File(["video"], "new.mp4", { type: "video/mp4" });
 
 			await act(async () => {
@@ -129,7 +128,7 @@ describe("useMultiVideoController — RHF 配線固有", () => {
 
 		it("handleDelete（既存動画）で deletedVideoIds に即時反映される", async () => {
 			const existing = makeExistingVideo({ tempId: "temp_del" });
-			const { result, formRef } = await renderControllerHook([existing]);
+			const { result, act, formRef } = await renderControllerHook([existing]);
 
 			await act(async () => {
 				await result.current.handlers.delete("temp_del");
@@ -176,13 +175,13 @@ describe("useMultiVideoController — RHF 配線固有", () => {
 			await render(<Host />);
 			expect(deleteRef.current).not.toBeNull();
 
-			await act(async () => {
-				await deleteRef.current!();
-			});
+			await deleteRef.current!();
 
-			const values = formRef.current?.getValues();
-			expect(values?.videos).toHaveLength(0);
-			expect(values?.videosDeletedIds).toContain(existing.id);
+			await vi.waitFor(() => {
+				const values = formRef.current?.getValues();
+				expect(values?.videos).toHaveLength(0);
+				expect(values?.videosDeletedIds).toContain(existing.id);
+			});
 		});
 	});
 });
