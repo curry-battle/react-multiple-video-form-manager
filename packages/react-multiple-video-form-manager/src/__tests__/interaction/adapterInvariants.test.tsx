@@ -1,8 +1,7 @@
 import { useForm as useTanstackForm } from "@tanstack/react-form";
 import type { ReactNode } from "react";
-import { act } from "react";
 import { useForm as useRhfForm } from "react-hook-form";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import type { Video } from "../../core/types/Video";
 import { useMultiVideoController as useRhfController } from "../../react-hook-form/useMultiVideoController";
@@ -72,47 +71,44 @@ describe.each(hosts)("VideoFieldAdapter invariants (%s)", (_label, Host) => {
 		await render(<Host handleRef={handleRef} />);
 
 		const file = new File(["data"], "v.mp4", { type: "video/mp4" });
-		await act(async () => {
-			await handleRef.current?.add(file);
-		});
+		await handleRef.current?.add(file);
 
-		const stored = handleRef.current?.items[0]?.video;
-		expect(stored?.status).toBe("new");
-		expect(stored?.status === "new" && stored.file).toBe(file);
+		await vi.waitFor(() => {
+			const stored = handleRef.current?.items[0]?.video;
+			expect(stored?.status).toBe("new");
+			expect(stored?.status === "new" && stored.file).toBe(file);
+		});
 	});
 
 	it("サムネイルの File の参照が保持される", async () => {
 		const handleRef: { current: Handle | null } = { current: null };
 		await render(<Host handleRef={handleRef} />);
 
-		await act(async () => {
-			await handleRef.current?.add(
-				new File(["data"], "v.mp4", { type: "video/mp4" }),
-			);
-		});
+		await handleRef.current?.add(
+			new File(["data"], "v.mp4", { type: "video/mp4" }),
+		);
+		await vi.waitFor(() => expect(handleRef.current?.items).toHaveLength(1));
 		const tempId = handleRef.current?.items[0]?.video.tempId as string;
 
 		const thumb = new File(["t"], "t.jpg", { type: "image/jpeg" });
-		await act(async () => {
-			await handleRef.current?.setThumbnailFromFile(tempId, thumb);
-		});
+		await handleRef.current?.setThumbnailFromFile(tempId, thumb);
 
-		const stored = handleRef.current?.items[0]?.video.thumbnail;
-		expect(stored?.source).toBe("upload");
-		expect(stored?.source === "upload" && stored.file).toBe(thumb);
+		await vi.waitFor(() => {
+			const stored = handleRef.current?.items[0]?.video.thumbnail;
+			expect(stored?.source).toBe("upload");
+			expect(stored?.source === "upload" && stored.file).toBe(thumb);
+		});
 	});
 
 	it("同一 tick の連続追加が lost update にならない（read-your-writes）", async () => {
 		const handleRef: { current: Handle | null } = { current: null };
 		await render(<Host handleRef={handleRef} />);
 
-		await act(async () => {
-			await Promise.all([
-				handleRef.current?.add(new File(["a"], "a.mp4", { type: "video/mp4" })),
-				handleRef.current?.add(new File(["b"], "b.mp4", { type: "video/mp4" })),
-			]);
-		});
+		await Promise.all([
+			handleRef.current?.add(new File(["a"], "a.mp4", { type: "video/mp4" })),
+			handleRef.current?.add(new File(["b"], "b.mp4", { type: "video/mp4" })),
+		]);
 
-		expect(handleRef.current?.items).toHaveLength(2);
+		await vi.waitFor(() => expect(handleRef.current?.items).toHaveLength(2));
 	});
 });

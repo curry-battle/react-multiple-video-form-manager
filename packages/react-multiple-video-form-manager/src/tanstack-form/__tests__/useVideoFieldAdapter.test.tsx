@@ -1,5 +1,5 @@
 import { useForm } from "@tanstack/react-form";
-import React, { act, type ReactNode } from "react";
+import React, { type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import { z } from "zod";
@@ -126,13 +126,11 @@ describe("useTanstackVideoFieldAdapter 基本操作", () => {
 
 		expect(isDirtyRef.current).toBe(false);
 
-		await act(async () => {
-			await handleRef.current?.addVideo(
-				new File(["v"], "a.mp4", { type: "video/mp4" }),
-			);
-		});
+		await handleRef.current?.addVideo(
+			new File(["v"], "a.mp4", { type: "video/mp4" }),
+		);
 
-		expect(handleRef.current?.items).toHaveLength(1);
+		await vi.waitFor(() => expect(handleRef.current?.items).toHaveLength(1));
 	});
 
 	it("handleDelete（既存動画）で動画が除去される", async () => {
@@ -152,11 +150,9 @@ describe("useTanstackVideoFieldAdapter 基本操作", () => {
 
 		expect(handleRef.current?.items).toHaveLength(1);
 
-		await act(async () => {
-			await handleRef.current?.items[0]?.handlers.delete();
-		});
+		await handleRef.current?.items[0]?.handlers.delete();
 
-		expect(handleRef.current?.items).toHaveLength(0);
+		await vi.waitFor(() => expect(handleRef.current?.items).toHaveLength(0));
 	});
 
 	it("handleRemoveThumbnail で thumbnail が null になる", async () => {
@@ -180,11 +176,11 @@ describe("useTanstackVideoFieldAdapter 基本操作", () => {
 
 		expect(handleRef.current?.items[0]?.video.thumbnail).not.toBeNull();
 
-		await act(async () => {
-			await handleRef.current?.items[0]?.handlers.removeThumbnail();
-		});
+		await handleRef.current?.items[0]?.handlers.removeThumbnail();
 
-		expect(handleRef.current?.items[0]?.video.thumbnail).toBeNull();
+		await vi.waitFor(() =>
+			expect(handleRef.current?.items[0]?.video.thumbnail).toBeNull(),
+		);
 	});
 });
 
@@ -273,14 +269,14 @@ describe("validateCause", () => {
 			/>,
 		);
 
-		await act(async () => {
-			await handleRef.current?.addVideo(
-				new File(["v"], "bad.webm", { type: "video/webm" }),
-			);
-		});
+		await handleRef.current?.addVideo(
+			new File(["v"], "bad.webm", { type: "video/webm" }),
+		);
 
-		const item = handleRef.current?.items[0];
-		expect(item?.errors).toBeDefined();
+		await vi.waitFor(() => {
+			const item = handleRef.current?.items[0];
+			expect(item?.errors).toBeDefined();
+		});
 	});
 
 	it("validateCause prop がコントローラに受け渡される", async () => {
@@ -298,12 +294,10 @@ describe("validateCause", () => {
 			/>,
 		);
 
-		await act(async () => {
-			await handleRef.current?.addVideo(
-				new File(["v"], "good.mp4", { type: "video/mp4" }),
-			);
-		});
+		await handleRef.current?.addVideo(
+			new File(["v"], "good.mp4", { type: "video/mp4" }),
+		);
 
-		expect(handleRef.current?.items).toHaveLength(1);
+		await vi.waitFor(() => expect(handleRef.current?.items).toHaveLength(1));
 	});
 });
