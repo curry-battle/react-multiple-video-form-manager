@@ -121,9 +121,22 @@ export type UploadsApi = {
 	 */
 	retry: (tempId: string) => boolean;
 	/**
-	 * 走行中の転送の完了を待ってから送信素材を返す。未着手のスロットは
-	 * この中で転送を発行して待つ。`uploadFile` 未設定なら待つ対象が無いので即座に
-	 * ok を返す。
+	 * 走行中の選択と転送の完了を待ってから送信素材を返す。未着手のスロットは
+	 * この中で転送を発行して待つ。
+	 *
+	 * 待つ選択は `add` / `changeFile` / `setThumbnailFromFrame` / `setThumbnailFromFile`
+	 * の 4 つ。いずれも await を挟んでからフォームへ書くため、走行中はまだ項目に
+	 * なっておらず、待たなければ選んだ動画が黙って素材から落ちる。**`uploadFile`
+	 * 未設定でも待つ** — 転送は起きなくても handler は走るため。
+	 *
+	 * **変換の失敗は `onError` だけが伝える。** 失敗した選択は項目にならないので、
+	 * `failedTempIds` にも `uploads.failed` にも現れない。転送の失敗とは経路が違う。
+	 *
+	 * 素材は解決した時点のフォーム値から組む。呼んだ時点のスナップショットではない。
+	 *
+	 * **返る直前に始まった選択は含まれないことがある。** 待機集合は各周回の入口で
+	 * 確定するため、最後の周回より後に始まった選択は次の呼び出しの対象になる。
+	 * 保存操作と選択操作が同時に起きる窓は消費側の UI で閉じること。
 	 *
 	 * 失敗したスロットは自動で再試行しない。`retry` を呼ぶまで `ok: false` が続く
 	 */
@@ -134,7 +147,13 @@ export type UploadsApi = {
 	 * 未完了のスロットが 1 つでもある項目は丸ごと除外し `excludedTempIds` で返す。
 	 * 「本体だけ送ってサムネイルを落とす」は、サムネイル無しで保存されるという
 	 * データ上の縮退を作るため採らない。項目自体はフォームに残るので、消費側は
-	 * 「今回は含まれなかった」と提示すること
+	 * 「今回は含まれなかった」と提示すること。
+	 *
+	 * **走行中の選択は見えない。** まだ項目になっていないので `excludedTempIds` にも
+	 * 出ず、黙って素材から落ちる。したがって **`getReady` 構成では `isBusy` だけを
+	 * 保存の gate に使うこと。** `pendingOperations` と `items[].isPending` では
+	 * 足りない — どちらも tempId をキーにした集合で、入口の時点で tempId を持たない
+	 * `add` が載る先を持たないため。`isBusy` は state 経由なので 1 レンダー遅れる
 	 */
 	getReady: () => ReadyVideos;
 };
@@ -220,6 +239,35 @@ const SELF_DISCARD_LIMIT = 2;
  * 依存させないため。自己破棄として数えられない破棄経路が将来生まれても、ここで止まる
  */
 const STALLED_ROUND_LIMIT = 2;
+
+const noop = (): void => {};
+
+/**
+ * 選択の競合単位。同じ値どうしだけが競合し、後着が現行になる。
+ *
+ * 差し替えとサムネイルは同じ項目の同じスロットへの選び直しと競合するので
+ * `slotKey(tempId, kind)` をそのまま使う。本体とサムネイルで 1 つのキーを共有すると、
+ * 本体の加工中にサムネイルを設定しただけで本体の差し替えが黙って捨てられる。
+ *
+ * 追加は競合相手がいないので 1 件ごとに別の値を作る。接頭辞で分けるのは、
+ * 追加が採番する tempId と衝突させないため
+ */
+type SelectionKey = string;
+
+const addSelectionKey = (seq: number): SelectionKey => `add:${seq}`;
+
+/**
+ * 反映が終わっていない選択。await を挟んでからフォームへ書く handler の 1 回の
+ * 呼び出しに対応し、この値の参照そのものが「現行は自分だ」という印になる。
+ *
+ * `settled` は反映の完了か `displace()` の早いほうで解決する。現行を降りた選択の
+ * 結果は捨てられるので、待ち続けると後着が終わっているのに保存が返らない
+ */
+type CurrentSelection = {
+	settled: Promise<void>;
+	/** 現行を降りたことを待ち側へ伝える。解決済みの選択に呼んでも無害 */
+	displace: () => void;
+};
 
 export function useMultiVideoCore(
 	params: UseMultiVideoCoreParams & { uploadFile: UploadFileFn },
@@ -307,36 +355,83 @@ export function useMultiVideoCore(
 	const selfDiscardsRef = useRef(new Map<string, number>());
 
 	/**
-	 * 操作の世代。ファイル加工やフレームキャプチャの await から戻ったとき、同じ
-	 * スロットへ後続の操作が発行されていたら書き込みを捨てる。加工の所要時間は
-	 * ファイルによって違うため、これが無いと「先に選んだ重いファイル」が
-	 * 「後に選んだ軽いファイル」を上書きする。
+	 * 走行中の選択。ファイル加工やフレームキャプチャの await から戻ったとき、同じ
+	 * スロットへ後続の操作が発行されていたら書き込みを捨てるための台帳であり、
+	 * `uploads.wait` が「まだ項目になっていない選択」を待つための供給源でもある。
 	 *
-	 * 転送スロットごとに分けるのが要点。1 つのカウンタを本体とサムネイルで共有すると、
-	 * 本体の加工中にサムネイルを設定しただけで本体の差し替えが黙って捨てられる。
-	 *
-	 * **スロットの内容を変える handler はすべて世代を進める。** 台帳から落とすだけでは
-	 * 加工待ちの操作は止まらず、落としたはずの内容が加工の完了後に書き戻される。
+	 * 追跡の要否は handler の種類ではなく、フォームへの書き込みが await の後に来るかで
+	 * 決まる。`handleDelete` / `handleMove*` / `handleRemoveThumbnail` は await の前に
+	 * 書き終えるので載らない。
 	 *
 	 * handlers を介さない書き換え（`form.reset` や adapter への直接書き込み）は観測できない。
-	 * 同じ tempId がそのまま残る復元では、復元前に発行した操作が最新のまま書き戻しうる。
-	 * 項目が一度消えて復活する経路は `pruneOrphans` が世代ごと落とすので閉じている
+	 * 同じ tempId がそのまま残る復元では、復元前に発行した操作が現行のまま書き戻しうる。
+	 * 項目が一度消えて復活する経路は `pruneOrphans` が現行を降ろすので閉じている
 	 */
-	const generationsRef = useRef(new Map<string, number>());
+	const currentSelectionsRef = useRef(
+		new Map<SelectionKey, CurrentSelection>(),
+	);
+	const addKeySeqRef = useRef(0);
+	const nextAddKey = useCallback(
+		(): SelectionKey => addSelectionKey(addKeySeqRef.current++),
+		[],
+	);
 
-	const bumpGeneration = useCallback(
-		(tempId: string, kind: UploadKind): number => {
+	/**
+	 * そのスロットの現行の選択を降ろす。走行中でなければ何も起きない。
+	 *
+	 * 台帳から落とす `discardSlot` とは別の関心事。あちらは走っている転送を止め、
+	 * こちらは「まだ項目になっていない選択」の結果を捨てさせる。片方だけでは、
+	 * 落としたはずの内容が加工の完了後に書き戻される
+	 */
+	const displaceSelection = useCallback(
+		(tempId: string, kind: UploadKind): void => {
 			const key = slotKey(tempId, kind);
-			const generation = (generationsRef.current.get(key) ?? 0) + 1;
-			generationsRef.current.set(key, generation);
-			return generation;
+			currentSelectionsRef.current.get(key)?.displace();
+			currentSelectionsRef.current.delete(key);
 		},
 		[],
 	);
 
-	const isGenerationStale = useCallback(
-		(tempId: string, kind: UploadKind, generation: number): boolean =>
-			generationsRef.current.get(slotKey(tempId, kind)) !== generation,
+	/**
+	 * その競合単位の現行の選択として `run` を走らせる（競合単位は `SelectionKey` を参照）。
+	 *
+	 * `run` に渡す `isCurrent` は「自分がまだ現行か」を返す。await を挟む handler は
+	 * フォームへ書く前にこれを確かめ、false なら結果を捨てる。false になるのは
+	 * 後着への交代・`handleDelete` / `handleRemoveThumbnail` / `pruneOrphans`・unmount。
+	 *
+	 * `run` は必ず promise を返すこと。同期 throw されると settle しない現行が残り、
+	 * `uploads.wait` が返らなくなる
+	 */
+	const runAsCurrent = useCallback(
+		(
+			key: SelectionKey,
+			run: (isCurrent: () => boolean) => Promise<boolean>,
+		): Promise<boolean> => {
+			const selections = currentSelectionsRef.current;
+			// 交代は明示的に伝える。降ろさないと、待ち側が永久保留になりうる
+			// 旧 current に詰まる
+			selections.get(key)?.displace();
+
+			let displace = noop;
+			const settled = new Promise<void>((resolve) => {
+				displace = resolve;
+			});
+			const current: CurrentSelection = { settled, displace };
+			// 登録は run の呼び出しより前。逆順だと、その隙に呼ばれた uploads.wait が
+			// 選択を待ち漏らす
+			selections.set(key, current);
+
+			const applying = run(() => selections.get(key) === current);
+			// reject は待ち側へ伝播させない。adapter.setVideos が同期 throw する実装では
+			// handler の promise が reject しうるが、待ち側の関心は終わったかどうかだけ
+			void applying.then(noop, noop).then(() => {
+				displace();
+				// 既に後着へ交代していたら消さない。無条件に消すと後着が
+				// 自分を現行でないと判断し、その結果まで捨てられる
+				if (selections.get(key) === current) selections.delete(key);
+			});
+			return applying;
+		},
 		[],
 	);
 
@@ -688,8 +783,8 @@ export function useMultiVideoCore(
 		[writeProgress, writeRecords],
 	);
 
-	const handleAdd = useCallback(
-		async (file: File): Promise<boolean> => {
+	const runAdd = useCallback(
+		async (file: File, isCurrent: () => boolean): Promise<boolean> => {
 			if (!checkMaxVideos()) return false;
 
 			incrementAdding();
@@ -701,6 +796,10 @@ export function useMultiVideoCore(
 					msgRef.current.processFile,
 				);
 				if (!processedFile) return false;
+
+				// 凍結された adapter から次の値を組んで書くと、再 mount 後に
+				// 追加された項目を巻き戻す
+				if (!isCurrent()) return false;
 
 				// await 中に並行 add が挿入を終えている可能性があるため、
 				// 挿入直前の状態で上限を再チェックする
@@ -729,11 +828,19 @@ export function useMultiVideoCore(
 		],
 	);
 
-	const handleFileChange = useCallback(
-		async (tempId: string, file: File): Promise<boolean> => {
-			if (findIndexByTempId(tempId) === undefined) return false;
+	const handleAdd = useCallback(
+		(file: File): Promise<boolean> =>
+			// 追加は誰とも競合しないので、現行を降りるのは unmount のときだけになる
+			runAsCurrent(nextAddKey(), (isCurrent) => runAdd(file, isCurrent)),
+		[nextAddKey, runAdd, runAsCurrent],
+	);
 
-			const generation = bumpGeneration(tempId, UploadKind.Video);
+	const runFileChange = useCallback(
+		async (
+			tempId: string,
+			file: File,
+			isCurrent: () => boolean,
+		): Promise<boolean> => {
 			addPending(tempId);
 			try {
 				const processedFile = await executeProcess(
@@ -743,9 +850,10 @@ export function useMultiVideoCore(
 					msgRef.current.processFile,
 				);
 				if (!processedFile) return false;
-				if (isGenerationStale(tempId, UploadKind.Video, generation)) {
-					return false;
-				}
+				// 解決した順ではなく選んだ順で勝敗を決める（startUpload が転送側に持つのと
+				// 同じ規則）。handleDelete・pruneOrphans・unmount も現行を降ろすので
+				// ここで打ち切られる
+				if (!isCurrent()) return false;
 
 				// await 中に並行操作で削除・移動されている可能性があるため、
 				// 対象は tempId から再解決する（ops.changeFile が行う）
@@ -756,8 +864,9 @@ export function useMultiVideoCore(
 				if (result.deletedId !== null) {
 					appendDeletedId(result.deletedId);
 					// 既存動画の差し替えでサムネイルは捨てられる。サムネイルスロットへの
-					// 後続操作でもあるので、台帳から落とすだけでなく世代も進める
-					bumpGeneration(tempId, UploadKind.Thumbnail);
+					// 後続操作でもあるので、台帳から落とすだけでなく走行中の選択も降ろす。
+					// 新規動画の差し替えはサムネイルを保持するので降ろさない
+					displaceSelection(tempId, UploadKind.Thumbnail);
 					discardSlot(tempId, UploadKind.Thumbnail);
 				}
 				startUploadFor(result.video, UploadKind.Video);
@@ -771,16 +880,27 @@ export function useMultiVideoCore(
 		[
 			addPending,
 			appendDeletedId,
-			bumpGeneration,
 			discardSlot,
+			displaceSelection,
 			executeProcess,
-			findIndexByTempId,
-			isGenerationStale,
 			processFile,
 			removePending,
 			safeValidate,
 			startUploadFor,
 		],
+	);
+
+	const handleFileChange = useCallback(
+		(tempId: string, file: File): Promise<boolean> => {
+			// 存在チェックは runAsCurrent の外。中に置くと存在しない tempId でも
+			// 一瞬エントリが登録され、uploads.wait が 1 周ぶん待つ
+			if (findIndexByTempId(tempId) === undefined)
+				return Promise.resolve(false);
+			return runAsCurrent(slotKey(tempId, UploadKind.Video), (isCurrent) =>
+				runFileChange(tempId, file, isCurrent),
+			);
+		},
+		[findIndexByTempId, runAsCurrent, runFileChange],
 	);
 
 	const handleDelete = useCallback(
@@ -794,17 +914,18 @@ export function useMultiVideoCore(
 			}
 			// 項目が消える唯一の経路。台帳を残すと、削除した項目の失敗が
 			// uploads.failed に残り続け、消費側は items で引けず retry でも消せない。
-			// 世代も進める。同じ tempId が復元されたときに、削除前の加工結果が
-			// 別の項目へ書き戻されるのを防ぐ
+			// 削除が勝つので走行中の選択も降ろす。降ろさないと、同じ tempId が
+			// 復元されたときに削除前の加工結果が別の項目へ書き戻され、
+			// uploads.wait も無関係になった選択を待ち続ける
 			for (const kind of UPLOAD_KINDS) {
-				bumpGeneration(tempId, kind);
+				displaceSelection(tempId, kind);
 				discardSlot(tempId, kind);
 			}
 
 			await safeValidate();
 			return true;
 		},
-		[appendDeletedId, bumpGeneration, discardSlot, safeValidate],
+		[appendDeletedId, discardSlot, displaceSelection, safeValidate],
 	);
 
 	const handleMoveUp = useCallback(
@@ -854,14 +975,12 @@ export function useMultiVideoCore(
 		[],
 	);
 
-	const handleSetThumbnailFromFrame = useCallback(
+	const runSetThumbnailFromFrame = useCallback(
 		async (
 			tempId: string,
 			videoElement: HTMLVideoElement,
+			isCurrent: () => boolean,
 		): Promise<boolean> => {
-			if (findIndexByTempId(tempId) === undefined) return false;
-
-			const generation = bumpGeneration(tempId, UploadKind.Thumbnail);
 			addPending(tempId);
 			try {
 				// catch はキャプチャだけに掛ける。以降の失敗まで拾うと、無関係な
@@ -877,9 +996,7 @@ export function useMultiVideoCore(
 					});
 					return false;
 				}
-				if (isGenerationStale(tempId, UploadKind.Thumbnail, generation)) {
-					return false;
-				}
+				if (!isCurrent()) return false;
 
 				const updated = updateThumbnail(tempId, captured);
 				if (updated === null) return false;
@@ -892,23 +1009,26 @@ export function useMultiVideoCore(
 				removePending(tempId);
 			}
 		},
-		[
-			addPending,
-			bumpGeneration,
-			findIndexByTempId,
-			isGenerationStale,
-			removePending,
-			safeValidate,
-			startUploadFor,
-			updateThumbnail,
-		],
+		[addPending, removePending, safeValidate, startUploadFor, updateThumbnail],
 	);
 
-	const handleSetThumbnailFromFile = useCallback(
-		async (tempId: string, file: File): Promise<boolean> => {
-			if (findIndexByTempId(tempId) === undefined) return false;
+	const handleSetThumbnailFromFrame = useCallback(
+		(tempId: string, videoElement: HTMLVideoElement): Promise<boolean> => {
+			if (findIndexByTempId(tempId) === undefined)
+				return Promise.resolve(false);
+			return runAsCurrent(slotKey(tempId, UploadKind.Thumbnail), (isCurrent) =>
+				runSetThumbnailFromFrame(tempId, videoElement, isCurrent),
+			);
+		},
+		[findIndexByTempId, runAsCurrent, runSetThumbnailFromFrame],
+	);
 
-			const generation = bumpGeneration(tempId, UploadKind.Thumbnail);
+	const runSetThumbnailFromFile = useCallback(
+		async (
+			tempId: string,
+			file: File,
+			isCurrent: () => boolean,
+		): Promise<boolean> => {
 			addPending(tempId);
 			try {
 				const processedFile = await executeProcess(
@@ -918,9 +1038,7 @@ export function useMultiVideoCore(
 					msgRef.current.processThumbnailFile,
 				);
 				if (!processedFile) return false;
-				if (isGenerationStale(tempId, UploadKind.Thumbnail, generation)) {
-					return false;
-				}
+				if (!isCurrent()) return false;
 
 				const updated = updateThumbnail(
 					tempId,
@@ -938,10 +1056,7 @@ export function useMultiVideoCore(
 		},
 		[
 			addPending,
-			bumpGeneration,
 			executeProcess,
-			findIndexByTempId,
-			isGenerationStale,
 			processThumbnailFile,
 			removePending,
 			safeValidate,
@@ -950,20 +1065,33 @@ export function useMultiVideoCore(
 		],
 	);
 
+	// フレームキャプチャとファイル選択は同じサムネイルスロットを共有するので、
+	// 同じ SelectionKey で相互に交代する
+	const handleSetThumbnailFromFile = useCallback(
+		(tempId: string, file: File): Promise<boolean> => {
+			if (findIndexByTempId(tempId) === undefined)
+				return Promise.resolve(false);
+			return runAsCurrent(slotKey(tempId, UploadKind.Thumbnail), (isCurrent) =>
+				runSetThumbnailFromFile(tempId, file, isCurrent),
+			);
+		},
+		[findIndexByTempId, runAsCurrent, runSetThumbnailFromFile],
+	);
+
 	const handleRemoveThumbnail = useCallback(
 		async (tempId: string): Promise<boolean> => {
 			if (findIndexByTempId(tempId) === undefined) return false;
-			// 加工中の設定操作より後の操作なので、世代を進めてそちらを捨てる。
-			// 進めないと、削除したサムネイルが加工の完了後に戻ってくる
-			bumpGeneration(tempId, UploadKind.Thumbnail);
+			// 加工中の設定操作より後の操作なので、そちらを降ろして捨てる。
+			// 降ろさないと、削除したサムネイルが加工の完了後に戻ってくる
+			displaceSelection(tempId, UploadKind.Thumbnail);
 			if (updateThumbnail(tempId, null) === null) return false;
 			discardSlot(tempId, UploadKind.Thumbnail);
 			await safeValidate();
 			return true;
 		},
 		[
-			bumpGeneration,
 			discardSlot,
+			displaceSelection,
 			findIndexByTempId,
 			safeValidate,
 			updateThumbnail,
@@ -1101,7 +1229,29 @@ export function useMultiVideoCore(
 	}, []);
 
 	const wait = useCallback(async (): Promise<UploadWaitResult> => {
+		/**
+		 * 走行中の選択を待つ。待ったら true を返す。
+		 *
+		 * 待ち終えた選択は現行から降りているので、残っていれば待機中に始まった選択。
+		 * 呼び出し側は true の間もう一度呼んでそれも待つ。
+		 *
+		 * 周回数に上限は置かない。周回が続くのは新しい選択が始まったときだけで、
+		 * それは待つべき選択が増えたということ。上限で打ち切ると、まだ項目になって
+		 * いない選択を送信素材から落とすことになり、この待ち合わせの目的が消える。
+		 * 停止性は handler が返す promise が settle することに依存する。
+		 * `processFile` / `VideoFieldAdapter.validate` が settle しない実装ではここで
+		 * 止まる（それぞれの doc が課している要求）
+		 */
+		const settleOperations = async (): Promise<boolean> => {
+			const inflight = [...currentSelectionsRef.current.values()];
+			if (inflight.length === 0) return false;
+			await Promise.all(inflight.map((op) => op.settled));
+			return true;
+		};
+
 		if (!uploadFileRef.current) {
+			// 転送は起きないが handler は走る。待たずに返すと項目になる前の選択が落ちる
+			while (await settleOperations()) {}
 			// 未設定の消費側では参照が無いのが正常。失敗扱いすると、一度も転送を
 			// 試みていない項目が failedTempIds に並ぶ
 			return { ok: true, ...buildPayload() };
@@ -1115,6 +1265,10 @@ export function useMultiVideoCore(
 		let stalledRounds = 0;
 
 		for (;;) {
+			// 選択 → 転送の順に待つ。選択が startUploadFor を終える前に収束ループへ
+			// 入ると、まだ始まっていない転送を待ち漏らす
+			if (await settleOperations()) continue;
+
 			const before = snapshot();
 			reissueUnresolved();
 
@@ -1231,10 +1385,11 @@ export function useMultiVideoCore(
 		for (const tempId of seen) {
 			if (alive.has(tempId)) continue;
 			seen.delete(tempId);
-			// 世代も落とす。同じ tempId が復活しても、消える前に発行した操作が
-			// 最新のまま残らない（`get` が undefined を返すので stale と判定される）
+			// 走行中の選択も降ろす。参照は項目が消えても勝手に失効しないので、
+			// 降ろさないと、消える前に発行した操作が現行のまま書き戻し、
+			// uploads.wait も項目の無い選択を待ち続ける
 			for (const kind of UPLOAD_KINDS) {
-				generationsRef.current.delete(slotKey(tempId, kind));
+				displaceSelection(tempId, kind);
 			}
 		}
 
@@ -1247,7 +1402,7 @@ export function useMultiVideoCore(
 			return true;
 		});
 		for (const key of orphanKeys) writeProgress(key, undefined);
-	}, [writeProgress, writeRecords]);
+	}, [displaceSelection, writeProgress, writeRecords]);
 
 	// 転送参照を持たないスロットが現れたら転送を発行する。unmount で in-flight と
 	// 台帳は失われるがフォーム state には項目が残るため、remount や初期値の後差し込みでも
@@ -1270,6 +1425,11 @@ export function useMultiVideoCore(
 	// StrictMode の再 mount 後に転送が再開されなくなる
 	useEffect(() => {
 		return () => {
+			// 現行のまま残すと、再 mount 後の uploads.wait が前の mount の選択を待ち、
+			// 解決した選択が書き戻しまで通る。adapter は unmount 時点で凍結される一方
+			// setVideos は生きたフォームへ書くので、それは項目を巻き戻す
+			for (const op of currentSelectionsRef.current.values()) op.displace();
+			currentSelectionsRef.current.clear();
 			writeRecords((draft) => {
 				let changed = false;
 				for (const [key, rec] of draft) {

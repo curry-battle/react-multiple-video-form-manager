@@ -74,10 +74,10 @@ type VideosError = {
 - `items: VideoItem[]` — 動画ごとに `errors` / `canMoveUp` / `canMoveDown` / `errorMessages` / `isPending` / tempId バインド済み `handlers` を付与した配列。バインド済み handler は tempId ごとの Map キャッシュで identity を生涯安定化している
 - `rootErrors: VideoFieldError[]` — `adapter.errors.root` をそのまま公開
 - `handlers: UseMultiVideoCoreHandlers` — add / changeFile / delete / moveUp / moveDown / move / thumbnail 系
-- `pendingOperations: ReadonlySet<string>` — process / upload 実行中アイテムの tempId 集合
+- `pendingOperations: ReadonlySet<string>` — 項目ごとの handler が走行中の tempId 集合。覆うのは加工・書き込み・検証までで、転送の時間は含まない（転送は `uploads` と `items[].uploadState` が持つ）
 - `isAdding: boolean` — `handlers.add` 実行中フラグ
-- `isBusy: boolean` — `isAdding || pendingOperations.size > 0` の集約フラグ
-- `prepareForSubmit: (options?: PrepareForSubmitOptions) => Promise<PrepareForSubmitResult>` — 現在のフォーム値を `options` の uploadFile / uploadThumbnailFile で解決する submit 用関数。設定済み値への暗黙バインドはなく、呼び出しごとに渡された `options` のみを使う
+- `isBusy: boolean` — `isAdding || pendingOperations.size > 0` の集約フラグ。`uploads.getReady()` 構成では保存の gate として使う。`uploads.wait()` 構成では待ち合わせが同じ役目を果たすので gate に使わない
+- `uploads: UploadsApi` — 転送の `pending` / `failed` と、`wait` / `getReady` / `retry`
 - `raw: { videos, deletedVideoIds }` — debug 用途
 
 全 handler は `tempId` で動画を特定する。`handlers.move(tempId, toIndex)` は任意位置への移動をサポートし、
@@ -87,7 +87,7 @@ D&D などの操作に対応する。
 
 Controller の `render` prop に渡される型。hook の戻り値からリスト操作の `addVideo` だけを直接公開し、per-item 操作は `item.handlers` 経由に閉じ込めることで API 面を縮小している。
 
-- `items` / `rootErrors` / `addVideo` / `isBusy` / `isAdding` / `pendingOperations` / `prepareForSubmit` / `raw`
+- `items` / `rootErrors` / `addVideo` / `isBusy` / `isAdding` / `pendingOperations` / `uploads` / `raw`
 
 ## 純関数レイヤー: `videoListOps`
 
@@ -101,7 +101,21 @@ Controller の `render` prop に渡される型。hook の戻り値からリス�
 ## 非同期安全性
 
 - **lost update 防止**: handler は `adapterRef.current.getVideos()` でストアの最新値を取得してから mutation する。reactive な `videos` は再レンダーまで stale なため、直接参照しない。
-- **完了順逆転防止**: epoch カウンタにより、同一 tempId への連続操作で先行 upload の結果が後勝ちしない。
+- **完了順逆転防止**: 転送は `token`（`File` / `Blob` の参照）の同一性比較で書き戻しの可否を決める。スロットの中身が発行時と別物になっていれば結果を捨てる。選択の側は下記の「選択の競合」が担う。
+
+## 選択の競合
+
+ファイルの加工とフレームキャプチャは await を挟むため、フォームへ書き込むのは選択の直後ではない。その間に同じ場所へ別の選択が来ると、解決の速い順ではなく選んだ順で勝敗を決める必要がある。
+
+`currentSelectionsRef` が「この競合単位で現行の選択は誰か」を持つ。値の参照そのものが印で、走行中の選択は `run` に渡される `isCurrent()` でフォームへ書く前に自分が現行かを確かめ、違えば結果を捨てる。
+
+- **競合単位はスロット**（`slotKey(tempId, kind)`）。本体とサムネイルで 1 つのキーを共有すると、本体の加工中にサムネイルを設定しただけで本体の差し替えが捨てられる
+- **追加は 1 件ごとに別のキー**（`add:<seq>`）。追加は誰とも競合しないので、現行を降りるのは unmount のときだけ
+- **フレームキャプチャとファイルからのサムネイル設定は同じスロットを共有する。** 相互に交代する
+
+現行を降ろす経路は 5 つ。`handleDelete`（両スロット）、`handleRemoveThumbnail`（thumbnail）、既存動画の差し替え（thumbnail）、`pruneOrphans`（フォームから消えた tempId の両スロット）、unmount（全キー）。
+
+降ろすことは待ち側にも効く。`uploads.wait()` は現行の選択が settle するまで待つので、降ろさないと捨てた選択が永久に解決せず保存が返らなくなる。転送の中断（`discardSlot`）とは別の関心事で、両方を呼ぶ箇所がある。
 
 ## アダプタ
 
@@ -137,7 +151,7 @@ Controller の `render` prop に渡される型。hook の戻り値からリス�
 Render Props コンポーネント `MultiVideoController`（両 subpath 同名）は
 対応する hook を内部で呼び、`render` prop に `MultiVideoRenderProps` を渡す。
 `deletedName` はデフォルト `${name}DeletedIds` で省略可能。
-submit ハンドラから `prepareForSubmit` を触る場合は、render の内側に閉じ込めない hook 側を使う。
+submit ハンドラから `uploads` を触る場合は、render の内側に閉じ込めない hook 側を使う。
 
 ## バンドル隔離
 
@@ -157,7 +171,8 @@ packages/react-multiple-video-form-manager/src/
 │  ├─ useMultiVideoCore.ts        # フォーム非依存コア hook
 │  ├─ usePreviewUrl.ts            # File/URL プレビュー用 hook
 │  ├─ videoListOps.ts             # 配列変換の純関数群
-│  ├─ prepareForSubmit.ts         # submit 用アップロード解決の純関数 + PrepareForSubmitError
+│  ├─ submitPayload.ts            # 送信素材を組む純関数
+│  ├─ uploadSlots.ts              # スロットのキーと転送元・書き戻しの純関数
 │  ├─ fileInputHelpers.ts         # <input type="file"> change イベントからの File 取り出し
 │  ├─ VideoFieldAdapter.ts        # ポート型
 │  ├─ normalizeErrorLeaf.ts        # エラー leaf 正規化（RHF/TanStack 共用）

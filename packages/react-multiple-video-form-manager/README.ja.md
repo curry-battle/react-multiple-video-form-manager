@@ -70,7 +70,7 @@ function MyForm() {
         isBusy,
         pendingOperations,
         isAdding,
-        prepareForSubmit,
+        uploads,
         raw,
       }) => (
         <>
@@ -84,7 +84,7 @@ function MyForm() {
               {item.errorMessages[0] && <span>{item.errorMessages[0]}</span>}
             </div>
           ))}
-          <button disabled={isBusy}>保存</button>
+          <button onClick={() => void uploads.wait()}>保存</button>
         </>
       )}
     />
@@ -101,7 +101,7 @@ import { useMultiVideoController } from "@curry-battle/react-multiple-video-form
 import { useForm } from "react-hook-form";
 
 const form = useForm<MyForm>();
-const { items, rootErrors, handlers, pendingOperations, isAdding, isBusy, prepareForSubmit, raw } = useMultiVideoController({
+const { items, rootErrors, handlers, pendingOperations, isAdding, isBusy, uploads, raw } = useMultiVideoController({
   form,
   name: "videos",
   deletedName: "videosDeletedIds",
@@ -145,7 +145,7 @@ function MyForm() {
         isBusy,
         pendingOperations,
         isAdding,
-        prepareForSubmit,
+        uploads,
         raw,
       }) => (
         // UI 実装
@@ -155,7 +155,7 @@ function MyForm() {
 }
 ```
 
-TanStack アダプタは read / write をすべてフォームストア経由で行うため（`useStore(form.store, ...)` で reactive subscription を組み、validate 直後に `items` / `rootErrors` が同期して更新されます）、`useMultiVideoController` はフォームレベルで呼べます。`<form.Field mode="array">` は不要です — field インスタンスが未登録なら `validateField` はフォームレベルの検証へフォールバックし、`setFieldValue` が `fieldMeta` を自前で生成します。submit ハンドラから `prepareForSubmit` を使いたい場合はフックを直接呼んでください（render props コンポーネントは render の内側に閉じ込めます）。`name` / `deletedName` はフォームデータのトップレベルキーである必要があります。
+TanStack アダプタは read / write をすべてフォームストア経由で行うため（`useStore(form.store, ...)` で reactive subscription を組み、validate 直後に `items` / `rootErrors` が同期して更新されます）、`useMultiVideoController` はフォームレベルで呼べます。`<form.Field mode="array">` は不要です — field インスタンスが未登録なら `validateField` はフォームレベルの検証へフォールバックし、`setFieldValue` が `fieldMeta` を自前で生成します。submit ハンドラから `uploads` を使いたい場合はフックを直接呼んでください（render props コンポーネントは render の内側に閉じ込めます）。`name` / `deletedName` はフォームデータのトップレベルキーである必要があります。
 
 両 subpath から同名 `MultiVideoController` を export しています。同一ファイルで両方を使う場合は import alias で区別してください:
 
@@ -225,28 +225,21 @@ import { getFileFromChangeEvent } from "@curry-battle/react-multiple-video-form-
 />
 ```
 
-## アップロード戦略
-
-| 戦略 | 渡す場所 | 動作 |
-|------|---------|------|
-| upload-on-submit（デフォルト） | `prepareForSubmit({ uploadFile, uploadThumbnailFile })` | submit 時にまとめてアップロード |
-| upload-on-select（opt-in） | Controller prop `uploadOnSelect={{ uploadFile, uploadThumbnailFile }}` | ファイル選択時に即アップロード |
-
-**デフォルトは upload-on-submit** — 初見のユーザは `prepareForSubmit(options)` だけ覚えれば OK です。
-
-**upload-on-select** は大容量ファイル向けの最適化です。submit を軽くできます。両方を併用しても安全です: `prepareForSubmit` は `uploadRef` を持つ項目をスキップするため、`uploadOnSelect` 使用中に `options` を渡しても二重アップロードにはなりません。
-
 ## オプション Props
 
 | Prop | Type | 説明 |
 |------|------|------|
 | `processFile` | `(file: File) => Promise<File>` | 動画ファイル追加・差し替え時の前処理 |
 | `processThumbnailFile` | `(file: File) => Promise<File>` | サムネイルファイルアップロード時の前処理 |
-| `uploadOnSelect` | `UploadOnSelectOptions` | ファイル選択時に即アップロード。`uploadFile?`、`uploadThumbnailFile?`、`onOrphanedUpload?` を含む |
-| `onError` | `(error: MultiVideoError) => void` | `processFile` / `processThumbnailFile` / `uploadFile` / `uploadThumbnailFile` の失敗、`maxVideos` 超過、バリデーション reject 時に呼ばれる |
+| `uploadFile` | `UploadFileFn` | ファイル選択時に転送を開始する。本体とサムネイルで 1 本を共有し、どちらの転送かは `ctx.kind` で渡る |
+| `onError` | `(error: MultiVideoError) => void` | `processFile` / `processThumbnailFile` / `uploadFile` の失敗、`maxVideos` 超過、バリデーション reject 時に呼ばれる |
 | `maxVideos` | `number` | UI レベルの最大動画数。超過時は `addVideo` が即 `false` |
 | `messages` | `CoreMessages` | i18n 用のカスタムエラーメッセージ |
 | `deletedName` | `string` | 削除IDフィールド名。デフォルトは `${name}DeletedIds` |
+
+**`processFile` / `processThumbnailFile` が返す promise は必ず settle させてください。** どちらも 1 つの型（`ProcessFileFn`）を共有し、この要求は両方に掛かります。ファイルを選んでからフォームに載るまでの間は `uploads.wait()` がその完了を待つため、settle しないと保存が返りません（`uploadFile` 未設定でも同じです）。転送と違い中断の口が無いので、止まりうる処理はタイムアウトで棄却してください。
+
+**`VideoFieldAdapter.validate()` にも同じ要求が掛かります。** 各ハンドラはフォームへ書き込んだあと最後に `validate()` を await するため、これが返らないと素材が揃っていても保存が返りません。同梱のアダプタは条件を満たしています。自前のアダプタを書く場合だけ注意してください。
 
 ## Render Props
 
@@ -255,10 +248,10 @@ import { getFileFromChangeEvent } from "@curry-battle/react-multiple-video-form-
 | `items` | `VideoItem[]` | 動画ごとの `video`, `errors`, `canMoveUp`, `canMoveDown`, `errorMessages`, `isPending`, バインド済み `handlers` |
 | `rootErrors` | `VideoFieldError[]` | 配列レベルエラー（maxVideos 等） |
 | `addVideo` | `(file: File) => Promise<boolean>` | 動画を追加 |
-| `isBusy` | `boolean` | 追加中または per-item 非同期操作中 |
+| `isBusy` | `boolean` | 追加中または per-item 非同期操作中。`uploads.getReady()` 構成では保存の gate に使う（下記） |
 | `isAdding` | `boolean` | `addVideo` 実行中 |
-| `pendingOperations` | `ReadonlySet<string>` | 非同期操作中アイテムの tempId 集合 |
-| `prepareForSubmit` | `(options?) => Promise<PrepareForSubmitResult>` | submit 用に状態を解決 |
+| `pendingOperations` | `ReadonlySet<string>` | 項目ごとの handler が走行中の tempId 集合。加工・書き込み・検証までを覆い、転送の時間は含まない |
+| `uploads` | `UploadsApi` | 転送の状態と、送信素材を組む `wait` / `getReady` / `retry` |
 | `raw` | `{ videos, deletedVideoIds }` | デバッグ用の生フォーム値 |
 
 per-item 操作は `item.handlers` 経由:
@@ -289,43 +282,58 @@ type VideosError = {
 
 ## サブミットフロー
 
-`prepareForSubmit` は動画・サムネイルの状態をサーバー送信可能な payload に解決します。`options` に `uploadFile` / `uploadThumbnailFile` を渡すと、**このメソッド内で未アップロードのファイルがアップロードされ**、すべての `uploadedUrl` が埋まった状態で返ります（新規は項目の `uploadRef`、既存は保存済み URL が入ります）。
+`uploadFile` を設定すると、ファイルを選んだ時点で転送が始まります。項目は転送の完了を待たずにフォームへ入り、転送は裏で走ります。保存時に送信素材を組む口が `uploads` の 2 つで、**どちらを使うかで保存ボタンの gate の書き方が変わります。**
 
-### upload-on-submit（デフォルト）
-
-呼び出し時に `uploadFile` / `uploadThumbnailFile` を渡します:
+### `uploads.wait()` — 待ってから送る
 
 ```tsx
-const { prepareForSubmit } = useMultiVideoController({
-  form,
-  name: "videos",
-});
+const { uploads } = useMultiVideoController({ form, name: "videos", uploadFile });
 
 const onSubmit = async () => {
-  const { videos, deletedIds } = await prepareForSubmit({ uploadFile, uploadThumbnailFile });
-  await api.save({ videos: videos.map(toMyApiShape), deletedIds });
+  const result = await uploads.wait();
+  if (!result.ok) {
+    // result.failedTempIds に失敗した項目の tempId が入る
+    return;
+  }
+  await api.save({ videos: result.videos, deletedIds: result.deletedIds });
 };
 ```
 
-### upload-on-select（opt-in）
+**待つのは転送だけではありません。** `addVideo` / `changeFile` / `setThumbnailFromFrame` / `setThumbnailFromFile` の 4 つは、ファイルの加工やフレームキャプチャを await してからフォームへ書き込みます。走行中はまだ項目になっていないので、待たなければ選んだ動画が黙って送信素材から落ちます。`wait()` はこの走行中の選択も待ちます。**`uploadFile` を設定していなくても待ちます** — 転送は起きなくてもハンドラは走るためです。
 
-`uploadOnSelect` として Controller に渡します。ファイル選択時に即アップロードされるため、`prepareForSubmit()` は引数不要です:
+そのため **`wait()` を使う構成では保存ボタンを `isBusy` で無効化する必要がありません。** 同梱の examples はどちらもこの形です。
+
+`wait()` について、あと 3 点。
+
+- **加工の失敗は `onError` だけが伝えます。** 失敗した選択は項目にならないので、`failedTempIds` にも `uploads.failed` にも現れません。転送の失敗とは経路が違います
+- 送信素材は解決した時点のフォーム値から組みます。呼んだ時点のスナップショットではありません
+- **返る直前に始まった選択は含まれないことがあります。** 待つ対象は各周回の入口で確定するためです。保存操作と選択操作が同時に起きる窓は UI 側で閉じてください
+
+### `uploads.getReady()` — 待たずに送れるものだけ送る
 
 ```tsx
-<MultiVideoController
-  uploadOnSelect={{ uploadFile, uploadThumbnailFile, onOrphanedUpload }}
-  render={({ prepareForSubmit }) => {
-    const onSubmit = async () => {
-      const { videos, deletedIds } = await prepareForSubmit();
-      await api.save({ videos: videos.map(toMyApiShape), deletedIds });
-    };
-  }}
-/>
+const onSubmit = async () => {
+  const { videos, deletedIds, excludedTempIds } = uploads.getReady();
+  if (excludedTempIds.length > 0) {
+    // 「この動画は今回の保存に含まれませんでした」と提示する
+  }
+  await api.save({ videos, deletedIds });
+};
 ```
 
-両方を併用できます: `prepareForSubmit` は `uploadRef` を持つ項目をスキップするため、`uploadOnSelect` 使用中に `options` を渡しても二重アップロードにはなりません。`uploadOnSelect` が一部の種類だけ設定されている場合（例: `uploadFile` のみ）、未設定の種類（サムネイル）は `options` を渡した submit 時にアップロードされます。
+未完了の転送を持つ項目は丸ごと除外され、`excludedTempIds` で返ります。項目自体はフォームに残るので、消費側で提示してください。
 
-アップロードが 1 件でも失敗すると `PrepareForSubmitError` で reject します。`successfulUploadRefs` に失敗前にアップロードが成功した転送参照が入っているため、孤立ファイルの後始末に使えます。純粋関数版 `prepareForSubmit(videos, deletedIds, { uploadFile?, uploadThumbnailFile? })` もコアエントリから export されています。
+**`getReady()` を使う構成では、保存ボタンを `isBusy` で無効化してください。** `getReady()` には走行中の選択が見えず、`excludedTempIds` にも出ないまま素材から落ちるためです。`pendingOperations` や `items[].isPending` では足りません — どちらも tempId をキーにした集合で、入口の時点で tempId を持たない `addVideo` は載る先がありません。`isBusy` は state 経由なので 1 レンダー遅れる点に注意してください。
+
+**gate を外すと、フォームが検証していない項目が送信素材に入る窓ができます。** 各ハンドラはフォームへ書き込んだあとに `validate()` を await するので、書き込みは済んだが検証がまだ終わっていない項目が `getReady()` の素材に入ります。
+
+### `uploads.retry()` — 失敗した転送をやり直す
+
+```tsx
+<button onClick={() => uploads.retry(item.video.tempId)}>再試行</button>
+```
+
+**失敗した転送は保存を押し直しても再発行されません。** `retry(tempId)` を明示的に呼んでください。自動で再送すると、失敗し続ける転送を保存のたびに撃ち直すことになります。失敗した項目は `uploads.failed` と `items[].uploadState` で引けます。
 
 ### サムネイルの手動解決（escape hatch）
 
@@ -407,7 +415,7 @@ const deletedIdsSchema = createDeletedVideoIdsSchema({
 
 | パス | 内容 |
 |------|------|
-| `@curry-battle/react-multiple-video-form-manager` | コア（型、VideoUtils、ThumbnailUtils、useMultiVideoCore、usePreviewUrl、useThumbnailPreviewUrl、prepareForSubmit、getFileFromChangeEvent / getFilesFromChangeEvent、VideoFieldAdapter） |
+| `@curry-battle/react-multiple-video-form-manager` | コア（型、VideoUtils、ThumbnailUtils、useMultiVideoCore、usePreviewUrl、useThumbnailPreviewUrl、getFileFromChangeEvent / getFilesFromChangeEvent、VideoFieldAdapter） |
 | `@curry-battle/react-multiple-video-form-manager/react-hook-form` | RHF アダプタ（MultiVideoController、useMultiVideoController、useVideoFieldAdapter） |
 | `@curry-battle/react-multiple-video-form-manager/tanstack-form` | TanStack Form アダプタ（MultiVideoController、useMultiVideoController、useVideoFieldAdapter） |
 | `@curry-battle/react-multiple-video-form-manager/schemas/zod` | Zod スキーマファクトリ |

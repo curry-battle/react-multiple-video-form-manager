@@ -17,7 +17,7 @@ React 向けのヘッドレスな複数動画管理ライブラリ。追加・�
 - `deletedVideoIds` フィールドによる削除動画の個別追跡
 - `usePreviewUrl` / `useThumbnailPreviewUrl` hook による blob URL ライフサイクルの自動管理
 - `processFile` / `processThumbnailFile` コールバックでクライアント側の前処理
-- `uploadOnSelect` prop で選択時即アップロード
+- `uploadFile` で選択時に転送を開始し、`uploads.wait()` が保存時に走行中の選択と転送を待つ
 - Zod & Valibot スキーマファクトリ（制約設定を共有）
 - i18n 対応のエラーメッセージ
 

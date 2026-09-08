@@ -71,7 +71,7 @@ function MyForm() {
         isBusy,
         pendingOperations,
         isAdding,
-        prepareForSubmit,
+        uploads,
         raw,
       }) => (
         <>
@@ -85,7 +85,7 @@ function MyForm() {
               {item.errorMessages[0] && <span>{item.errorMessages[0]}</span>}
             </div>
           ))}
-          <button disabled={isBusy}>Submit</button>
+          <button onClick={() => void uploads.wait()}>Submit</button>
         </>
       )}
     />
@@ -102,7 +102,7 @@ import { useMultiVideoController } from "@curry-battle/react-multiple-video-form
 import { useForm } from "react-hook-form";
 
 const form = useForm<MyForm>();
-const { items, rootErrors, handlers, pendingOperations, isAdding, isBusy, prepareForSubmit, raw } = useMultiVideoController({
+const { items, rootErrors, handlers, pendingOperations, isAdding, isBusy, uploads, raw } = useMultiVideoController({
   form,
   name: "videos",
   deletedName: "videosDeletedIds",
@@ -146,7 +146,7 @@ function MyForm() {
         isBusy,
         pendingOperations,
         isAdding,
-        prepareForSubmit,
+        uploads,
         raw,
       }) => (
         // UI implementation
@@ -156,7 +156,7 @@ function MyForm() {
 }
 ```
 
-The TanStack adapter reads and writes through the form store only (`useStore(form.store, ...)` for reactive subscriptions, keeping `items` / `rootErrors` synchronized after validation), so `useMultiVideoController` can be called at form level. `<form.Field mode="array">` is not required: `validateField` falls back to form-level validators when no field instance is registered, and `setFieldValue` populates `fieldMeta` itself. Call the hook directly when the submit handler needs `prepareForSubmit` — the render-props component keeps it inside the render callback. `name` and `deletedName` must be top-level keys of the form data.
+The TanStack adapter reads and writes through the form store only (`useStore(form.store, ...)` for reactive subscriptions, keeping `items` / `rootErrors` synchronized after validation), so `useMultiVideoController` can be called at form level. `<form.Field mode="array">` is not required: `validateField` falls back to form-level validators when no field instance is registered, and `setFieldValue` populates `fieldMeta` itself. Call the hook directly when the submit handler needs `uploads` — the render-props component keeps it inside the render callback. `name` and `deletedName` must be top-level keys of the form data.
 
 Both subpaths export the same component name `MultiVideoController`. When using both in the same file, use import aliases:
 
@@ -226,28 +226,21 @@ import { getFileFromChangeEvent } from "@curry-battle/react-multiple-video-form-
 />
 ```
 
-## Upload Strategies
-
-| Strategy | Where to pass | Behavior |
-|----------|--------------|----------|
-| upload-on-submit (default) | `prepareForSubmit({ uploadFile, uploadThumbnailFile })` | Upload all pending files at submit time |
-| upload-on-select (opt-in) | Controller prop `uploadOnSelect={{ uploadFile, uploadThumbnailFile }}` | Upload immediately on file select |
-
-**Default: upload-on-submit** — first-time users only need to learn `prepareForSubmit(options)`.
-
-**upload-on-select** is an optimization for large files: uploading early makes submit lighter. Both strategies can coexist safely: `prepareForSubmit` skips items that already carry an `uploadRef`, so passing `options` while using `uploadOnSelect` never double-uploads.
-
 ## Optional Props
 
 | Prop | Type | Description |
 |------|------|-------------|
 | `processFile` | `(file: File) => Promise<File>` | Preprocessor for video file add/replace (transcode, compress, etc.) |
 | `processThumbnailFile` | `(file: File) => Promise<File>` | Preprocessor for thumbnail file upload |
-| `uploadOnSelect` | `UploadOnSelectOptions` | Upload files immediately on select. Contains `uploadFile?`, `uploadThumbnailFile?`, and `onOrphanedUpload?` |
-| `onError` | `(error: MultiVideoError) => void` | Error handler for `processFile` / `processThumbnailFile` / `uploadFile` / `uploadThumbnailFile` failures, `maxVideos` exceeded, or validation rejection |
+| `uploadFile` | `UploadFileFn` | Starts a transfer when a file is selected. One function serves both the video and the thumbnail; `ctx.kind` says which |
+| `onError` | `(error: MultiVideoError) => void` | Error handler for `processFile` / `processThumbnailFile` / `uploadFile` failures, `maxVideos` exceeded, or validation rejection |
 | `maxVideos` | `number` | UI-level maximum video count; `addVideo` returns `false` immediately when exceeded |
 | `messages` | `CoreMessages` | Custom error messages for i18n |
 | `deletedName` | `string` | Deleted IDs field name. Defaults to `${name}DeletedIds` |
+
+**The promise returned by `processFile` / `processThumbnailFile` must settle.** Both share one type (`ProcessFileFn`), so this requirement applies to both. While a file is being processed it is not yet an item, and `uploads.wait()` waits for that processing to finish — a promise that never settles means submit never returns (the same holds with no `uploadFile` configured). Unlike a transfer there is no way to abort, so reject on a timeout for anything that can stall.
+
+**`VideoFieldAdapter.validate()` carries the same requirement.** Every handler awaits `validate()` after writing to the form, so a promise that never settles blocks submit even when the payload is complete. The bundled adapters satisfy this; only a hand-written adapter needs care.
 
 ## Render Props
 
@@ -256,10 +249,10 @@ import { getFileFromChangeEvent } from "@curry-battle/react-multiple-video-form-
 | `items` | `VideoItem[]` | Per-item data with `video`, `errors`, `canMoveUp`, `canMoveDown`, `errorMessages`, `isPending`, and bound `handlers` |
 | `rootErrors` | `VideoFieldError[]` | Array-level errors (maxVideos etc.) |
 | `addVideo` | `(file: File) => Promise<boolean>` | Add a new video |
-| `isBusy` | `boolean` | `true` when any add or per-item async operation is in progress |
+| `isBusy` | `boolean` | `true` when any add or per-item async operation is in progress. Gate the submit button on this in a `uploads.getReady()` setup (see below) |
 | `isAdding` | `boolean` | `true` while `addVideo` is in progress |
-| `pendingOperations` | `ReadonlySet<string>` | tempIds of items with in-flight operations |
-| `prepareForSubmit` | `(options?) => Promise<PrepareForSubmitResult>` | Resolve all state for submission |
+| `pendingOperations` | `ReadonlySet<string>` | tempIds of items whose per-item handler is running. Covers processing, the form write and validation; the transfer time is not included |
+| `uploads` | `UploadsApi` | Transfer state plus `wait` / `getReady` / `retry` for building the submit payload |
 | `raw` | `{ videos, deletedVideoIds }` | Raw form values for debugging |
 
 Per-item operations are accessed via `item.handlers`:
@@ -290,43 +283,58 @@ type VideosError = {
 
 ## Submit Flow
 
-`prepareForSubmit` resolves all video/thumbnail state into a server-ready payload where every `uploadedUrl` is filled in (from the item's `uploadRef` for new items, from the stored URL for existing ones). When `uploadFile` / `uploadThumbnailFile` are passed in `options`, **pending files are uploaded inside this call** before the result is returned.
+Configuring `uploadFile` starts a transfer the moment a file is selected. The item enters the form without waiting for that transfer, which runs in the background. `uploads` offers two ways to build the submit payload, and **the choice determines how you gate the submit button.**
 
-### upload-on-submit (default)
-
-Pass `uploadFile` / `uploadThumbnailFile` at call time — **`prepareForSubmit` uploads all pending files internally** before returning the resolved payload:
+### `uploads.wait()` — wait, then send
 
 ```tsx
-const { prepareForSubmit } = useMultiVideoController({
-  form,
-  name: "videos",
-});
+const { uploads } = useMultiVideoController({ form, name: "videos", uploadFile });
 
 const onSubmit = async () => {
-  const { videos, deletedIds } = await prepareForSubmit({ uploadFile, uploadThumbnailFile });
-  await api.save({ videos: videos.map(toMyApiShape), deletedIds });
+  const result = await uploads.wait();
+  if (!result.ok) {
+    // result.failedTempIds holds the tempIds that failed
+    return;
+  }
+  await api.save({ videos: result.videos, deletedIds: result.deletedIds });
 };
 ```
 
-### upload-on-select (opt-in)
+**Transfers are not the only thing it waits for.** `addVideo`, `changeFile`, `setThumbnailFromFrame` and `setThumbnailFromFile` all await file processing or frame capture *before* writing to the form. While that runs the selection is not yet an item, so without waiting the chosen video would silently drop out of the payload. `wait()` waits for those in-flight selections too — **including when no `uploadFile` is configured**, since the handlers still run even when no transfer does.
 
-Pass the callbacks via the `uploadOnSelect` controller prop — files are uploaded immediately on selection, so `prepareForSubmit()` needs no arguments:
+That is why **a `wait()` setup does not need to disable the submit button on `isBusy`.** Both bundled examples are built this way.
+
+Three more things about `wait()`:
+
+- **Processing failures are reported only through `onError`.** A failed selection never becomes an item, so it appears in neither `failedTempIds` nor `uploads.failed`. Transfer failures travel a different path
+- The payload is built from the form values as of the moment it resolves, not a snapshot from when it was called
+- **A selection started right before it returns may not be included.** The set to wait on is fixed at the start of each round. Close the window where saving and selecting overlap in your UI
+
+### `uploads.getReady()` — send what is ready, without waiting
 
 ```tsx
-<MultiVideoController
-  uploadOnSelect={{ uploadFile, uploadThumbnailFile, onOrphanedUpload }}
-  render={({ prepareForSubmit }) => {
-    const onSubmit = async () => {
-      const { videos, deletedIds } = await prepareForSubmit();
-      await api.save({ videos: videos.map(toMyApiShape), deletedIds });
-    };
-  }}
-/>
+const onSubmit = async () => {
+  const { videos, deletedIds, excludedTempIds } = uploads.getReady();
+  if (excludedTempIds.length > 0) {
+    // tell the user these videos were left out of this save
+  }
+  await api.save({ videos, deletedIds });
+};
 ```
 
-Both strategies can coexist: `prepareForSubmit` skips items that already carry an `uploadRef`, so passing `options` while using `uploadOnSelect` never double-uploads. If `uploadOnSelect` only configures part of the upload set (e.g. only `uploadFile`), the unconfigured kind (thumbnails) is still uploaded at submit time when `options` are passed to `prepareForSubmit`.
+Any item with an unfinished transfer is excluded whole and reported in `excludedTempIds`. The item stays in the form, so surface it to the user.
 
-If any upload fails, it rejects with `PrepareForSubmitError`; its `successfulUploadRefs` lists the upload references produced before the failure, so you can clean up orphaned files. A standalone pure version `prepareForSubmit(videos, deletedIds, { uploadFile?, uploadThumbnailFile? })` is also exported from the core entry.
+**In a `getReady()` setup, disable the submit button on `isBusy`.** `getReady()` cannot see in-flight selections: they do not appear in `excludedTempIds` either, they simply drop out of the payload. `pendingOperations` and `items[].isPending` are not enough — both are keyed by tempId, and `addVideo` has no tempId yet at the point it starts. Note that `isBusy` goes through state, so it lags by one render.
+
+**Removing the gate opens a window where items the form has not validated end up in the payload.** Every handler awaits `validate()` *after* writing to the form, so an item that has been written but not yet validated is picked up by `getReady()`.
+
+### `uploads.retry()` — retry a failed transfer
+
+```tsx
+<button onClick={() => uploads.retry(item.video.tempId)}>Retry</button>
+```
+
+**A failed transfer is not reissued by pressing save again.** Call `retry(tempId)` explicitly. Retrying automatically would re-fire a consistently failing transfer on every save. Failed items are available through `uploads.failed` and `items[].uploadState`.
 
 ### Manual thumbnail resolution (escape hatch)
 
@@ -408,7 +416,7 @@ const deletedIdsSchema = createDeletedVideoIdsSchema({
 
 | Path | Contents |
 |------|----------|
-| `@curry-battle/react-multiple-video-form-manager` | Core (types, VideoUtils, ThumbnailUtils, useMultiVideoCore, usePreviewUrl, useThumbnailPreviewUrl, prepareForSubmit, getFileFromChangeEvent / getFilesFromChangeEvent, VideoFieldAdapter) |
+| `@curry-battle/react-multiple-video-form-manager` | Core (types, VideoUtils, ThumbnailUtils, useMultiVideoCore, usePreviewUrl, useThumbnailPreviewUrl, getFileFromChangeEvent / getFilesFromChangeEvent, VideoFieldAdapter) |
 | `@curry-battle/react-multiple-video-form-manager/react-hook-form` | RHF adapter (MultiVideoController, useMultiVideoController, useVideoFieldAdapter) |
 | `@curry-battle/react-multiple-video-form-manager/tanstack-form` | TanStack Form adapter (MultiVideoController, useMultiVideoController, useVideoFieldAdapter) |
 | `@curry-battle/react-multiple-video-form-manager/schemas/zod` | Zod schema factory |

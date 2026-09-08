@@ -44,6 +44,21 @@ export type Video = VideoNew | VideoExisting;
 /** 転送が完了し転送参照が確定した新規動画 */
 export type VideoUploaded = VideoNew & { uploadRef: string };
 
+/**
+ * 選択されたファイルを加工する（リサイズ・変換など）。加工後のファイルが項目に入る。
+ * `processFile`（動画本体）と `processThumbnailFile`（サムネイル）が 1 本を共有し、
+ * ここに書く要求は両方に掛かる。
+ *
+ * **返す promise は必ず settle すること。** `handleAdd` / `handleFileChange` /
+ * `handleSetThumbnailFromFile` は加工を await してから選択をフォームへ反映し、
+ * `uploads.wait` はその完了を待つため、settle しないと保存が返らない
+ * （`uploadFile` 未設定でも同じ）。転送と違い中断の口が無いので、止まりうる処理は
+ * タイムアウトで棄却すること。
+ *
+ * `handleSetThumbnailFromFrame` だけは非対称で、消費側の実装が原因になりえない。
+ * await するのがライブラリ内の `ThumbnailUtils.captureFrame` で、`ProcessFileFn` を
+ * 通らないため
+ */
 export type ProcessFileFn = (file: File) => Promise<File>;
 
 // functions
