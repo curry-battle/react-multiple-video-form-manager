@@ -39,6 +39,10 @@ export interface VideoFieldAdapter {
 	 * 検証を再発火する（結果の真偽は core では使わない）。
 	 * deletedVideoIds の変更では呼ばない — 削除 ID の正当性はフォームスキーマの
 	 * 責務外であり、videos の変更で validate() を呼ぶだけで十分なため。
+	 *
+	 * **返す promise は必ず settle すること。** `uploads.wait` が待つのは handler の
+	 * 完了で、handler は書き込みを終えたあと最後に validate() を await する。
+	 * したがって settle しないと、素材が揃っていても保存が返らない
 	 */
 	validate(): Promise<void>;
 	/** 中立形式に正規化済みのエラー */

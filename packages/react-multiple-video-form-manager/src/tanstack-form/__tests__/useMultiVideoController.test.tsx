@@ -1,12 +1,13 @@
 import { useForm } from "@tanstack/react-form";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render } from "vitest-browser-react";
+import { render, renderHook } from "vitest-browser-react";
 import { z } from "zod";
 import type { MultiVideoError } from "../../core/types/MultiVideoError";
 import type { Video, VideoExisting, VideoNew } from "../../core/types/Video";
 import type { CoreMessages } from "../../core/types/VideoSchemaTypes";
 import { VideoFormStatus } from "../../core/types/VideoStatus";
+import type { MultiVideoCoreOptions } from "../../core/useMultiVideoCore";
 import { createVideosSchema } from "../../schemas/zod";
 import { MultiVideoController } from "../MultiVideoController";
 import { useMultiVideoController } from "../useMultiVideoController";
@@ -20,6 +21,52 @@ const makeNewVideo = (overrides?: Partial<VideoNew>): VideoNew => ({
 	thumbnail: null,
 	...overrides,
 });
+
+function createDeferred<T>() {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((r) => {
+		resolve = r;
+	});
+	return { promise, resolve };
+}
+
+/** 保留中の promise が「まだ settle していない」ことを見るための待ち */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+const videoFile = (name = "a.mp4") =>
+	new File(["v"], name, { type: "video/mp4" });
+
+/**
+ * 待ち合わせの検証にフックを直に呼ぶ形が要る理由は 2 つ。`renderHook` の戻り値から
+ * `act` と `unmount` を取れること（unmount を跨ぐ検証に要る）と、同ファイルの
+ * `HarnessHost` が render props の一部だけを `handleRef` へ写していて `raw` を
+ * 読めないこと
+ */
+async function renderControllerHook(
+	initialVideos: Video[] = [],
+	coreOptions: MultiVideoCoreOptions = {},
+) {
+	// TanStack の useForm 戻り値は型引数が多く、テストからは state だけ読めれば足りる
+	const formRef: { current: any } = { current: null };
+
+	const rendered = await renderHook(() => {
+		const form = useForm({
+			defaultValues: {
+				videos: initialVideos,
+				videosDeletedIds: [],
+			} as TestForm,
+		});
+		formRef.current = form;
+		return useMultiVideoController({
+			form,
+			name: "videos",
+			deletedName: "videosDeletedIds",
+			...coreOptions,
+		});
+	});
+
+	return { ...rendered, formRef };
+}
 
 const makeExistingVideo = (
 	overrides?: Partial<VideoExisting>,
@@ -350,6 +397,98 @@ describe("MultiVideoController (integration)", () => {
 				expect(values?.videos).toHaveLength(0);
 				expect(values?.videosDeletedIds).toContain(existing.id);
 			});
+		});
+	});
+
+	describe("[red] uploads.wait と走行中の選択", () => {
+		it("[red] T1: 変換を保留させたまま wait() を呼ぶと、解決後に当該動画を含む ok を返す", async () => {
+			const converted = createDeferred<File>();
+			const { result, act } = await renderControllerHook([], {
+				processFile: () => converted.promise,
+				uploadFile: async () => ({ uploadRef: "ref-a" }),
+			});
+
+			let waited: unknown = null;
+			await act(async () => {
+				void result.current.handlers.add(videoFile("a.mp4"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waited = r;
+				});
+				converted.resolve(videoFile("a.mp4"));
+				await waiting;
+			});
+
+			expect(waited).toMatchObject({
+				ok: true,
+				videos: [{ uploadRef: "ref-a" }],
+			});
+		});
+
+		it("[red] T4: uploadFile 未設定の構成でも変換を待つ", async () => {
+			const converted = createDeferred<File>();
+			const { result, act } = await renderControllerHook([], {
+				processFile: () => converted.promise,
+			});
+
+			let waited: unknown = null;
+			await act(async () => {
+				void result.current.handlers.add(videoFile("a.mp4"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waited = r;
+				});
+				await flush();
+				expect(waited).toBeNull();
+
+				converted.resolve(videoFile("a.mp4"));
+				await waiting;
+			});
+
+			expect(waited).toMatchObject({
+				ok: true,
+				videos: [{ status: VideoFormStatus.New }],
+			});
+		});
+
+		it("[red] T10: unmount 後に解決した選択はフォームへ書き戻さない", async () => {
+			const converted = createDeferred<File>();
+			const { result, act, unmount, formRef } = await renderControllerHook([], {
+				processFile: () => converted.promise,
+			});
+
+			let adding: Promise<boolean> | undefined;
+			await act(async () => {
+				adding = result.current.handlers.add(videoFile("a.mp4"));
+				await flush();
+			});
+
+			await unmount();
+
+			converted.resolve(videoFile("a.mp4"));
+			await adding;
+
+			const values = formRef.current?.state.values as TestForm | undefined;
+			expect(values?.videos).toHaveLength(0);
+		});
+	});
+
+	describe("[regression] 走行中の選択の交代", () => {
+		it("[regression] T11: 変換を保留させた並行 add で 2 件とも残る", async () => {
+			const conversions = [createDeferred<File>(), createDeferred<File>()];
+			let call = 0;
+			const { result, act } = await renderControllerHook([], {
+				processFile: () => conversions[call++].promise,
+			});
+
+			await act(async () => {
+				const first = result.current.handlers.add(videoFile("a.mp4"));
+				const second = result.current.handlers.add(videoFile("b.mp4"));
+				conversions[0].resolve(videoFile("a.mp4"));
+				conversions[1].resolve(videoFile("b.mp4"));
+				expect(await first).toBe(true);
+				expect(await second).toBe(true);
+			});
+
+			expect(result.current.raw.videos).toHaveLength(2);
 		});
 	});
 });

@@ -17,7 +17,7 @@ Supports **React Hook Form** and **TanStack Form**, with optional **Zod** / **Va
 - Separate deleted-video tracking via `deletedVideoIds` field
 - `usePreviewUrl` / `useThumbnailPreviewUrl` hooks for automatic blob URL lifecycle management
 - `processFile` / `processThumbnailFile` callbacks for client-side preprocessing
-- `uploadOnSelect` prop for upload-on-select workflows
+- `uploadFile` starts transfers on selection; `uploads.wait()` waits for in-flight selections and transfers at save time
 - Zod & Valibot schema factories with shared constraint config
 - i18n-ready error messages
 

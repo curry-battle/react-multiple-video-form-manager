@@ -81,14 +81,15 @@ export function VideoForm({ initialVideos }: VideoFormProps) {
 
 	const maxVideos = 5;
 
-	const { items, rootErrors, handlers, isBusy, raw, uploads } =
-		useMultiVideoController({
+	const { items, rootErrors, handlers, raw, uploads } = useMultiVideoController(
+		{
 			form,
 			name: "videos",
 			maxVideos,
 			uploadFile,
 			onError: handleError,
-		});
+		},
+	);
 	uploadsRef.current = uploads;
 
 	return (
@@ -264,7 +265,7 @@ export function VideoForm({ initialVideos }: VideoFormProps) {
 						{({ isSubmitting, canSubmit }) => (
 							<button
 								type="submit"
-								disabled={isSubmitting || isBusy || !canSubmit}
+								disabled={isSubmitting || !canSubmit}
 								className="w-full px-4 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 active:scale-[0.99] transition-all disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed shadow-sm"
 							>
 								{isSubmitting ? (

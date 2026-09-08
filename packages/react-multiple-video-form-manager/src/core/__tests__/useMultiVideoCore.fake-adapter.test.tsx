@@ -1,7 +1,12 @@
 import { useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "vitest-browser-react";
-import { ThumbnailSource } from "../types/Thumbnail";
+import type { SubmitVideo } from "../types/Submit";
+import {
+	type ThumbnailFromFrame,
+	ThumbnailSource,
+	ThumbnailSubmitStatus,
+} from "../types/Thumbnail";
 import type {
 	UploadFileContext,
 	UploadFileFn,
@@ -27,6 +32,12 @@ function createDeferred<T>() {
 	});
 	return { promise, resolve };
 }
+
+/**
+ * 保留中の promise が「まだ settle していない」ことを見るための待ち。
+ * マクロタスクを 1 つ挟むので、待機側が解決していればこの後に観測できる
+ */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 type UploadCall = {
 	file: File;
@@ -2187,6 +2198,517 @@ describe("useMultiVideoCore (FakeVideoFieldAdapter)", () => {
 			expect(result.current.items[0].uploadState.video?.status).toBe("pending");
 			expect(result.current.items[0].isPending).toBe(false);
 			expect(result.current.isBusy).toBe(false);
+		});
+	});
+
+	// 待つ対象は転送だけではない。await を挟んでからフォームへ書く handler は、
+	// 走行中は項目にも台帳にも現れないので、転送だけを見る待ち合わせからは
+	// 素材ごと落ちる。
+	//
+	// 待たせたい選択はすべて uploads.wait() の呼び出しより前に始める。待機集合は
+	// wait() の同期区間で確定するので、返る直前に始まった選択が含まれることは
+	// 契約に無い。捨てた選択と生きた選択の勝敗を見るテストでは、生きた選択の
+	// *解決* だけを wait() の後ろへ置けば足りる
+	describe("[red] uploads.wait と走行中の選択", () => {
+		const frameThumbnail = (): ThumbnailFromFrame => ({
+			source: ThumbnailSource.Frame,
+			blob: new Blob(["img"], { type: "image/jpeg" }),
+			timestamp: 0,
+		});
+
+		it("[red] T1: 変換を保留させたまま wait() を呼ぶと、解決後に当該動画を含む ok を返す", async () => {
+			const converted = createDeferred<File>();
+			const { uploadFile, callsOf } = createUploadSpy();
+			const { result, act } = await renderCore([], {
+				processFile: () => converted.promise,
+				uploadFile,
+			});
+
+			let waited: unknown = null;
+			await act(async () => {
+				// 変換中に保存を押す状況。add は await しない
+				void result.current.handlers.add(videoFile("a.mp4"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waited = r;
+				});
+				converted.resolve(videoFile("a.mp4"));
+				await flush();
+				callsOf("video")[0].resolve({ uploadRef: "ref-a" });
+				await waiting;
+			});
+
+			expect(waited).toMatchObject({
+				ok: true,
+				videos: [{ uploadRef: "ref-a" }],
+			});
+		});
+
+		it("[red] T2: wait() は変換の解決前に settle しない", async () => {
+			const converted = createDeferred<File>();
+			const { uploadFile, callsOf } = createUploadSpy();
+			const { result, act } = await renderCore([], {
+				processFile: () => converted.promise,
+				uploadFile,
+			});
+
+			let waited: unknown = null;
+			await act(async () => {
+				void result.current.handlers.add(videoFile("a.mp4"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waited = r;
+				});
+				await flush();
+				expect(waited).toBeNull();
+
+				converted.resolve(videoFile("a.mp4"));
+				await flush();
+				callsOf("video")[0].resolve({ uploadRef: "ref-a" });
+				await waiting;
+			});
+
+			expect(waited).toMatchObject({ ok: true });
+		});
+
+		it("[red] T3: 変換が解決しても転送の完了まで待つ", async () => {
+			const converted = createDeferred<File>();
+			const { uploadFile, callsOf } = createUploadSpy();
+			const { result, act } = await renderCore([], {
+				processFile: () => converted.promise,
+				uploadFile,
+			});
+
+			let waited: unknown = null;
+			await act(async () => {
+				void result.current.handlers.add(videoFile("a.mp4"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waited = r;
+				});
+				converted.resolve(videoFile("a.mp4"));
+				await flush();
+				// 変換は解決したが転送はまだ
+				expect(waited).toBeNull();
+
+				callsOf("video")[0].resolve({ uploadRef: "ref-a" });
+				await waiting;
+			});
+
+			expect(waited).toMatchObject({
+				ok: true,
+				videos: [{ uploadRef: "ref-a" }],
+			});
+		});
+
+		it("[red] T4: uploadFile 未設定の構成でも変換を待つ", async () => {
+			const converted = createDeferred<File>();
+			const { result, act } = await renderCore([], {
+				processFile: () => converted.promise,
+			});
+
+			let waited: unknown = null;
+			await act(async () => {
+				void result.current.handlers.add(videoFile("a.mp4"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waited = r;
+				});
+				await flush();
+				expect(waited).toBeNull();
+
+				converted.resolve(videoFile("a.mp4"));
+				await waiting;
+			});
+
+			expect(waited).toMatchObject({
+				ok: true,
+				videos: [{ status: VideoFormStatus.New }],
+			});
+		});
+
+		it("[red] T5: フレームキャプチャを保留させたまま wait() を呼ぶと待つ", async () => {
+			// オプションのハンドラを 1 つも設定していない消費側でも踏む唯一の経路。
+			// captureFrame はライブラリ側の処理なので、消費側には避ける手立てが無い
+			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
+			const { uploadFile, callsOf } = createUploadSpy();
+			const { result, act } = await renderCore([ex], { uploadFile });
+
+			const { ThumbnailUtils } = await import("../types/Thumbnail");
+			const captured = createDeferred<ThumbnailFromFrame>();
+			const captureFrameSpy = vi
+				.spyOn(ThumbnailUtils, "captureFrame")
+				.mockReturnValue(captured.promise);
+			try {
+				let waited: unknown = null;
+				await act(async () => {
+					void result.current.handlers.setThumbnailFromFrame(
+						"temp_ex",
+						document.createElement("video"),
+					);
+					const waiting = result.current.uploads.wait().then((r) => {
+						waited = r;
+					});
+					await flush();
+					expect(waited).toBeNull();
+
+					captured.resolve(frameThumbnail());
+					await flush();
+					callsOf("thumbnail")[0].resolve({ uploadRef: "ref-frame" });
+					await waiting;
+				});
+
+				expect(waited).toMatchObject({
+					ok: true,
+					videos: [{ thumbnail: { uploadRef: "ref-frame" } }],
+				});
+			} finally {
+				captureFrameSpy.mockRestore();
+			}
+		});
+
+		it("[red] T6: processThumbnailFile を保留させた setThumbnailFromFile でも待つ", async () => {
+			const converted = createDeferred<File>();
+			const ex = makeExistingVideo({ tempId: "temp_ex", id: "id-ex" });
+			const { uploadFile, callsOf } = createUploadSpy();
+			const { result, act } = await renderCore([ex], {
+				processThumbnailFile: () => converted.promise,
+				uploadFile,
+			});
+
+			let waited: unknown = null;
+			await act(async () => {
+				void result.current.handlers.setThumbnailFromFile(
+					"temp_ex",
+					thumbFile("t.jpg"),
+				);
+				const waiting = result.current.uploads.wait().then((r) => {
+					waited = r;
+				});
+				await flush();
+				expect(waited).toBeNull();
+
+				converted.resolve(thumbFile("t.jpg"));
+				await flush();
+				callsOf("thumbnail")[0].resolve({ uploadRef: "ref-thumb" });
+				await waiting;
+			});
+
+			expect(waited).toMatchObject({
+				ok: true,
+				videos: [{ thumbnail: { uploadRef: "ref-thumb" } }],
+			});
+		});
+
+		it("[red] T7a: 選び直しで捨てた先着が保留のままでも、後着の内容が素材に入る", async () => {
+			const conversions = [
+				createDeferred<File>(),
+				createDeferred<File>(),
+				createDeferred<File>(),
+			];
+			let call = 0;
+			const processFile = vi.fn(() => conversions[call++].promise);
+			const { result, act } = await renderCore([], { processFile });
+
+			await act(async () => {
+				const adding = result.current.handlers.add(videoFile("a.mp4"));
+				conversions[0].resolve(videoFile("a.mp4"));
+				await adding;
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+
+			let waited: unknown = null;
+			await act(async () => {
+				// 先着 (b) は永久保留。後着 (c) だけ解決する
+				void result.current.handlers.changeFile(tempId, videoFile("b.mp4"));
+				void result.current.handlers.changeFile(tempId, videoFile("c.mp4"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waited = r;
+				});
+				conversions[2].resolve(videoFile("c.mp4"));
+				await waiting;
+			});
+
+			expect(waited).toMatchObject({ ok: true });
+			expect(firstVideo(result).file.name).toBe("c.mp4");
+			const videos = (waited as { videos: readonly Video[] }).videos;
+			expect(videos).toHaveLength(1);
+			const only = videos[0];
+			expect(only.status === VideoFormStatus.New && only.file.name).toBe(
+				"c.mp4",
+			);
+		});
+
+		it("[red] T8a: 削除で捨てた選択が保留のままでも、後から始めた選択が素材に入る", async () => {
+			const conversions = [
+				createDeferred<File>(),
+				createDeferred<File>(),
+				createDeferred<File>(),
+			];
+			let call = 0;
+			const processFile = vi.fn(() => conversions[call++].promise);
+			const { result, act } = await renderCore([], { processFile });
+
+			await act(async () => {
+				const adding = result.current.handlers.add(videoFile("a.mp4"));
+				conversions[0].resolve(videoFile("a.mp4"));
+				await adding;
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+
+			let waited: unknown = null;
+			await act(async () => {
+				// 差し替えを保留したまま削除する。この選択は永久に settle しない
+				void result.current.handlers.changeFile(tempId, videoFile("b.mp4"));
+				await result.current.handlers.delete(tempId);
+
+				// 生きた選択
+				void result.current.handlers.add(videoFile("c.mp4"));
+				const waiting = result.current.uploads.wait().then((r) => {
+					waited = r;
+				});
+				conversions[2].resolve(videoFile("c.mp4"));
+				await waiting;
+			});
+
+			expect(waited).toMatchObject({ ok: true });
+			const videos = (waited as { videos: readonly Video[] }).videos;
+			expect(videos).toHaveLength(1);
+			const only = videos[0];
+			expect(only.status === VideoFormStatus.New && only.file.name).toBe(
+				"c.mp4",
+			);
+		});
+
+		it("[red] T9a: サムネイル削除で捨てた選択が保留のままでも、後着のサムネイルが素材に入る", async () => {
+			const conversions = [createDeferred<File>(), createDeferred<File>()];
+			let call = 0;
+			const processThumbnailFile = vi.fn(() => conversions[call++].promise);
+			const ex = makeExistingVideo({
+				tempId: "temp_ex",
+				id: "id-ex",
+				thumbnail: {
+					source: ThumbnailSource.Existing,
+					uploadedUrl: "https://s3.example.com/old-thumb.jpg",
+				},
+			});
+			const { result, act } = await renderCore([ex], { processThumbnailFile });
+
+			let waited: unknown = null;
+			await act(async () => {
+				// 先着は永久保留のまま removeThumbnail で降ろす
+				void result.current.handlers.setThumbnailFromFile(
+					"temp_ex",
+					thumbFile("t1.jpg"),
+				);
+				await result.current.handlers.removeThumbnail("temp_ex");
+
+				// 生きた選択
+				void result.current.handlers.setThumbnailFromFile(
+					"temp_ex",
+					thumbFile("t2.jpg"),
+				);
+				const waiting = result.current.uploads.wait().then((r) => {
+					waited = r;
+				});
+				conversions[1].resolve(thumbFile("t2.jpg"));
+				await waiting;
+			});
+
+			expect(waited).toMatchObject({ ok: true });
+			const thumbnail = (waited as { videos: readonly SubmitVideo[] }).videos[0]
+				.thumbnail;
+			expect(thumbnail).not.toBeNull();
+			expect(thumbnail && "file" in thumbnail && thumbnail.file.name).toBe(
+				"t2.jpg",
+			);
+		});
+
+		it("[red] T16: adapter.validate() を保留させると wait() が settle せず、解決後に返る", async () => {
+			const { uploadFile, callsOf } = createUploadSpy();
+			const { result, ref, act } = await renderCore([], { uploadFile });
+
+			const validating = createDeferred<void>();
+			ref.validate?.mockImplementationOnce(() => validating.promise);
+
+			let waited: unknown = null;
+			await act(async () => {
+				void result.current.handlers.add(videoFile("a.mp4"));
+				await flush();
+				// 転送は済ませておく。残っているのは handler の完了だけ
+				callsOf("video")[0].resolve({ uploadRef: "ref-a" });
+
+				const waiting = result.current.uploads.wait().then((r) => {
+					waited = r;
+				});
+				await flush();
+				expect(waited).toBeNull();
+
+				validating.resolve();
+				await waiting;
+			});
+
+			expect(waited).toMatchObject({
+				ok: true,
+				videos: [{ uploadRef: "ref-a" }],
+			});
+		});
+	});
+
+	// 現行実装でも緑。工程 6 で機構を 1 つずつ巻き戻して赤を確認するためのもの
+	describe("[regression] 走行中の選択の交代", () => {
+		it("[regression] T7b: 捨てた先着の選択が settle しなくても wait() が返る", async () => {
+			const conversions = [
+				createDeferred<File>(),
+				createDeferred<File>(),
+				createDeferred<File>(),
+			];
+			let call = 0;
+			const processFile = vi.fn(() => conversions[call++].promise);
+			const { result, act } = await renderCore([], { processFile });
+
+			await act(async () => {
+				const adding = result.current.handlers.add(videoFile("a.mp4"));
+				conversions[0].resolve(videoFile("a.mp4"));
+				await adding;
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+
+			let waited: unknown = null;
+			await act(async () => {
+				// 先着 (b) は永久保留
+				void result.current.handlers.changeFile(tempId, videoFile("b.mp4"));
+				// 待ち側に先着を掴ませてから交代させるのがこのテストの要点。後着を
+				// 先に始めると Map 上で先着が上書きされ、待ち側が先着を見ないまま
+				// 済んでしまう（[red] 側は逆に「内容が素材に入る」ことを見るので、
+				// 待たせたい選択を wait() より前に始める）
+				const waiting = result.current.uploads.wait().then((r) => {
+					waited = r;
+				});
+				void result.current.handlers.changeFile(tempId, videoFile("c.mp4"));
+				conversions[2].resolve(videoFile("c.mp4"));
+				await waiting;
+			});
+
+			expect(waited).toMatchObject({ ok: true });
+		});
+
+		it("[regression] T8b: 削除された項目の走行中の選択を待たない", async () => {
+			const conversions = [createDeferred<File>(), createDeferred<File>()];
+			let call = 0;
+			const processFile = vi.fn(() => conversions[call++].promise);
+			const { result, act } = await renderCore([], { processFile });
+
+			await act(async () => {
+				const adding = result.current.handlers.add(videoFile("a.mp4"));
+				conversions[0].resolve(videoFile("a.mp4"));
+				await adding;
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+
+			let waited: unknown = null;
+			await act(async () => {
+				// 2 本目は解決させない。削除で待機対象から外れる
+				void result.current.handlers.changeFile(tempId, videoFile("b.mp4"));
+				await result.current.handlers.delete(tempId);
+				waited = await result.current.uploads.wait();
+			});
+
+			expect(waited).toMatchObject({ ok: true, videos: [] });
+		});
+
+		it("[regression] T9b: サムネイル削除が走行中の設定操作を降ろす", async () => {
+			const converted = createDeferred<File>();
+			const ex = makeExistingVideo({
+				tempId: "temp_ex",
+				id: "id-ex",
+				thumbnail: {
+					source: ThumbnailSource.Existing,
+					uploadedUrl: "https://s3.example.com/old-thumb.jpg",
+				},
+			});
+			const { result, act } = await renderCore([ex], {
+				processThumbnailFile: () => converted.promise,
+			});
+
+			let waited: unknown = null;
+			await act(async () => {
+				// 解決させないまま降ろす。降りないと待ち側が詰まる
+				void result.current.handlers.setThumbnailFromFile(
+					"temp_ex",
+					thumbFile("t.jpg"),
+				);
+				await result.current.handlers.removeThumbnail("temp_ex");
+				waited = await result.current.uploads.wait();
+			});
+
+			expect(waited).toMatchObject({ ok: true });
+			const videos = (waited as { videos: readonly SubmitVideo[] }).videos;
+			expect(videos[0].thumbnail).toEqual({
+				status: ThumbnailSubmitStatus.Removed,
+			});
+		});
+
+		it("[regression] T14: handlers を介さず消えた項目が同じ tempId で復活しても、走行中だった変換が書き戻さない", async () => {
+			const conversions = [createDeferred<File>(), createDeferred<File>()];
+			let call = 0;
+			const processFile = vi.fn(() => conversions[call++].promise);
+			const { result, ref, act } = await renderCore([], { processFile });
+
+			await act(async () => {
+				const adding = result.current.handlers.add(videoFile("a.mp4"));
+				conversions[0].resolve(videoFile("a.mp4"));
+				await adding;
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+
+			await act(async () => {
+				void result.current.handlers.changeFile(tempId, videoFile("b.mp4"));
+				// form.reset 相当。handlers を通らないので pruneOrphans だけが観測点
+				ref.adapter?.setVideos([]);
+			});
+
+			// 同じ tempId で復元する。項目が消えたままだと changeFile が対象を
+			// 再解決できず、降ろされていなくても書き戻しが起きない。復活させて初めて
+			// pruneOrphans の displace が唯一の防波堤になる
+			const restored = makeNewVideo({
+				tempId,
+				file: videoFile("restored.mp4"),
+			});
+			await act(async () => {
+				ref.adapter?.setVideos([restored]);
+			});
+
+			await act(async () => {
+				conversions[1].resolve(videoFile("b.mp4"));
+				await flush();
+			});
+
+			expect(firstVideo(result).file.name).toBe("restored.mp4");
+		});
+
+		it("[regression] T15: handlers を介さず項目を落としたあと、その選択を待たずに wait() が返る", async () => {
+			const conversions = [createDeferred<File>(), createDeferred<File>()];
+			let call = 0;
+			const processFile = vi.fn(() => conversions[call++].promise);
+			const { result, ref, act } = await renderCore([], { processFile });
+
+			await act(async () => {
+				const adding = result.current.handlers.add(videoFile("a.mp4"));
+				conversions[0].resolve(videoFile("a.mp4"));
+				await adding;
+			});
+			const tempId = result.current.raw.videos[0].tempId;
+
+			await act(async () => {
+				// 2 本目は解決させない。降ろされないと待ち側が永久に詰まる
+				void result.current.handlers.changeFile(tempId, videoFile("b.mp4"));
+				// 孤児回収は effect で走るので、act を分けて反映させてから待つ
+				ref.adapter?.setVideos([]);
+			});
+
+			let waited: unknown = null;
+			await act(async () => {
+				waited = await result.current.uploads.wait();
+			});
+
+			expect(waited).toMatchObject({ ok: true, videos: [] });
 		});
 	});
 });
