@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/curry-battle/react-multiple-video-form-manager/compare/v0.3.0...v0.3.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* bump vitest, zod, and undici to clear audit findings ([#21](https://github.com/curry-battle/react-multiple-video-form-manager/issues/21)) ([1a862d8](https://github.com/curry-battle/react-multiple-video-form-manager/commit/1a862d81442084be410d5823e5ac89a2d0d00572))
+* bump vulnerable dependencies ([#19](https://github.com/curry-battle/react-multiple-video-form-manager/issues/19)) ([3b3b175](https://github.com/curry-battle/react-multiple-video-form-manager/commit/3b3b175d2a9ce5e6d8d61ab1a20c3982e80b950b))
+
 ## [0.3.0](https://github.com/curry-battle/react-multiple-video-form-manager/compare/v0.2.0...v0.3.0) (2026-09-08)
 
 
