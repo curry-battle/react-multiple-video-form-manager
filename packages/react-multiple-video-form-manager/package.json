@@ -122,18 +122,18 @@
 		"@tanstack/react-form": "1.33.2",
 		"@types/react": "19.2.17",
 		"@vitejs/plugin-react": "6.0.3",
-		"@vitest/browser": "4.1.11",
-		"@vitest/browser-playwright": "4.1.11",
-		"@vitest/coverage-v8": "4.1.11",
+		"@vitest/browser": "4.1.12",
+		"@vitest/browser-playwright": "4.1.12",
+		"@vitest/coverage-v8": "4.1.12",
 		"react": "19.2.8",
 		"react-dom": "19.2.8",
 		"react-hook-form": "7.82.0",
 		"tsdown": "0.22.12",
 		"typescript": "7.0.2",
 		"valibot": "1.4.2",
-		"vitest": "4.1.11",
+		"vitest": "4.1.12",
 		"vitest-browser-react": "2.2.0",
-		"zod": "4.4.3"
+		"zod": "4.6.7"
 	},
 	"publishConfig": {
 		"registry": "https://npm.pkg.github.com"
